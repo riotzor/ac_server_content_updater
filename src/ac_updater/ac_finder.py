@@ -1,3 +1,4 @@
+import sys
 from collections.abc import Callable
 from pathlib import Path
 
@@ -9,10 +10,10 @@ def _default_path_exists(path: Path) -> bool:
 
 
 def _read_steam_path_from_registry() -> str | None:
-    try:
-        import winreg
-    except ImportError:
+    if sys.platform != "win32":
         return None
+    import winreg
+
     try:
         key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Valve\Steam")
         value, _ = winreg.QueryValueEx(key, "SteamPath")
