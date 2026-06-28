@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import re
 import shlex
 import stat as stat_module
 from collections.abc import Callable
@@ -200,35 +199,43 @@ class SshClient:
         self._exec(f"systemctl stop {shlex.quote(service_name)}")
         log.info("Service stopped: %s", service_name)
 
-    def update_entry_list(
+    def list_server_cars(self, server_dir: str) -> list[str]:
+        """Return sorted car directory names from <server_dir>/content/cars/."""
+        assert self._sftp is not None, "Not connected"
+        cars_path = f"{server_dir}/content/cars"
+        try:
+            names = self._sftp.listdir(cars_path)
+        except OSError:
+            return []
+        cars: list[str] = []
+        for name in names:
+            try:
+                st = self._sftp.stat(f"{cars_path}/{name}")
+                if stat_module.S_ISDIR(st.st_mode):
+                    cars.append(name)
+            except OSError:
+                pass
+        result = sorted(cars)
+        log.info("Server cars at %s: %d found", server_dir, len(result))
+        return result
+
+    def write_entry_list(
         self,
         server_dir: str,
         cars: list[tuple[str, str]],
     ) -> None:
-        """Append new CAR_N entries to <server_dir>/cfg/entry_list.ini.
+        """Overwrite <server_dir>/cfg/entry_list.ini with all supplied cars.
 
-        Reads the existing file to determine the next CAR index, then appends
-        one section per car in the standard AC Server format.
+        Entries are numbered sequentially from CAR_0. The file is fully
+        replaced on each call so the list always reflects the current state
+        of the server's content/cars/ directory.
         """
         assert self._sftp is not None, "Not connected"
         path = f"{server_dir}/cfg/entry_list.ini"
-        log.info("Updating entry_list.ini: %s  cars=%d", path, len(cars))
-
-        try:
-            with self._sftp.open(path, "r") as fh:
-                existing: str = fh.read().decode("utf-8", errors="replace")
-        except OSError:
-            existing = ""
-
-        indices = [
-            int(m.group(1))
-            for m in re.finditer(r"^\[CAR_(\d+)\]", existing, re.MULTILINE)
-        ]
-        next_n = max(indices, default=-1) + 1
+        log.info("Writing entry_list.ini: %s  cars=%d", path, len(cars))
 
         entries = []
-        for i, (car_name, skin) in enumerate(cars):
-            n = next_n + i
+        for n, (car_name, skin) in enumerate(cars):
             entries.append(
                 f"[CAR_{n}]\n"
                 f"MODEL={car_name}\n"
@@ -241,16 +248,11 @@ class SshClient:
                 f"RESTRICTOR=0\n"
             )
 
-        separator = "\n" if existing.strip() else ""
-        new_block = (separator + "\n".join(entries)).encode("utf-8")
+        content = "\n".join(entries).encode("utf-8")
+        with self._sftp.open(path, "w") as fh:
+            fh.write(content)
 
-        with self._sftp.open(path, "a") as fh:
-            fh.write(new_block)
-
-        log.info(
-            "entry_list.ini updated: added %d car(s) starting at CAR_%d",
-            len(cars), next_n,
-        )
+        log.info("entry_list.ini written: %d car(s)", len(cars))
 
     # ------------------------------------------------------------------
     # Internal helpers

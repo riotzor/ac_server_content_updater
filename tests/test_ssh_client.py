@@ -438,7 +438,56 @@ def test_stop_service_raises_on_failure() -> None:
 
 
 # ---------------------------------------------------------------------------
-# update_entry_list
+# list_server_cars
+# ---------------------------------------------------------------------------
+
+
+def test_list_server_cars_returns_sorted_dirs() -> None:
+    mock_ssh = _make_mock_ssh()
+    sftp = mock_ssh.open_sftp.return_value
+    sftp.listdir.return_value = ["ferrari_458", "bmw_m3", "alfa_romeo"]
+    sftp.stat.return_value = _dir_stat()
+
+    with patch("ac_updater.ssh_client.paramiko.SSHClient", return_value=mock_ssh):
+        client = SshClient("h", "u")
+        client.connect()
+    cars = client.list_server_cars("/home/acserver/ac-drift")
+
+    assert cars == ["alfa_romeo", "bmw_m3", "ferrari_458"]
+    sftp.listdir.assert_called_once_with("/home/acserver/ac-drift/content/cars")
+
+
+def test_list_server_cars_excludes_files() -> None:
+    mock_ssh = _make_mock_ssh()
+    sftp = mock_ssh.open_sftp.return_value
+    sftp.listdir.return_value = ["ferrari_458", "readme.txt"]
+
+    def _stat(path: str) -> MagicMock:
+        return _file_stat() if path.endswith(".txt") else _dir_stat()
+
+    sftp.stat.side_effect = _stat
+
+    with patch("ac_updater.ssh_client.paramiko.SSHClient", return_value=mock_ssh):
+        client = SshClient("h", "u")
+        client.connect()
+    cars = client.list_server_cars("/home/acserver/ac-drift")
+
+    assert cars == ["ferrari_458"]
+
+
+def test_list_server_cars_returns_empty_on_oserror() -> None:
+    mock_ssh = _make_mock_ssh()
+    sftp = mock_ssh.open_sftp.return_value
+    sftp.listdir.side_effect = OSError("not found")
+
+    with patch("ac_updater.ssh_client.paramiko.SSHClient", return_value=mock_ssh):
+        client = SshClient("h", "u")
+        client.connect()
+    assert client.list_server_cars("/home/acserver/ac-drift") == []
+
+
+# ---------------------------------------------------------------------------
+# write_entry_list
 # ---------------------------------------------------------------------------
 
 
@@ -451,65 +500,54 @@ def _sftp_file(content: bytes = b"") -> MagicMock:
     return fh
 
 
-def test_update_entry_list_appends_from_next_index() -> None:
+def test_write_entry_list_numbers_from_zero() -> None:
     mock_ssh = _make_mock_ssh()
     sftp = mock_ssh.open_sftp.return_value
-
-    existing = b"[CAR_0]\nMODEL=old_car\nSKIN=\nSPECTATOR_MODE=0\n"
-    read_fh = _sftp_file(existing)
     write_fh = _sftp_file()
-    sftp.open.side_effect = [read_fh, write_fh]
+    sftp.open.return_value = write_fh
 
     with patch("ac_updater.ssh_client.paramiko.SSHClient", return_value=mock_ssh):
         client = SshClient("h", "u")
         client.connect()
-    client.update_entry_list("/home/acserver/ac-drift", [("ferrari_458", "red_skin")])
-
-    written: str = write_fh.write.call_args[0][0].decode("utf-8")
-    assert "[CAR_1]" in written
-    assert "MODEL=ferrari_458" in written
-    assert "SKIN=red_skin" in written
-
-
-def test_update_entry_list_starts_at_zero_for_empty_file() -> None:
-    mock_ssh = _make_mock_ssh()
-    sftp = mock_ssh.open_sftp.return_value
-
-    read_fh = MagicMock()
-    read_fh.__enter__ = lambda s: s
-    read_fh.__exit__ = MagicMock(return_value=False)
-    read_fh.read.side_effect = OSError("not found")
-
-    write_fh = _sftp_file()
-    sftp.open.side_effect = [OSError("not found"), write_fh]
-
-    with patch("ac_updater.ssh_client.paramiko.SSHClient", return_value=mock_ssh):
-        client = SshClient("h", "u")
-        client.connect()
-    client.update_entry_list("/home/acserver/ac-drift", [("ferrari_458", "")])
+    client.write_entry_list(
+        "/home/acserver/ac-drift",
+        [("ferrari_458", "red_skin"), ("bmw_m3", "white")],
+    )
 
     written: str = write_fh.write.call_args[0][0].decode("utf-8")
     assert "[CAR_0]" in written
+    assert "[CAR_1]" in written
     assert "MODEL=ferrari_458" in written
+    assert "SKIN=red_skin" in written
+    assert "MODEL=bmw_m3" in written
+    assert "SKIN=white" in written
 
 
-def test_update_entry_list_continues_from_highest_car_index() -> None:
+def test_write_entry_list_uses_write_mode() -> None:
     mock_ssh = _make_mock_ssh()
     sftp = mock_ssh.open_sftp.return_value
-
-    existing = (
-        b"[CAR_0]\nMODEL=car_a\n"
-        b"[CAR_3]\nMODEL=car_d\n"
-        b"[CAR_1]\nMODEL=car_b\n"
-    )
-    read_fh = _sftp_file(existing)
-    write_fh = _sftp_file()
-    sftp.open.side_effect = [read_fh, write_fh]
+    sftp.open.return_value = _sftp_file()
 
     with patch("ac_updater.ssh_client.paramiko.SSHClient", return_value=mock_ssh):
         client = SshClient("h", "u")
         client.connect()
-    client.update_entry_list("/home/acserver/ac-drift", [("new_car", "default")])
+    client.write_entry_list("/home/acserver/ac-drift", [("car_a", "")])
 
-    written: str = write_fh.write.call_args[0][0].decode("utf-8")
-    assert "[CAR_4]" in written
+    sftp.open.assert_called_once()
+    mode: str = sftp.open.call_args[0][1]
+    assert mode == "w"
+
+
+def test_write_entry_list_empty_cars_writes_empty_file() -> None:
+    mock_ssh = _make_mock_ssh()
+    sftp = mock_ssh.open_sftp.return_value
+    write_fh = _sftp_file()
+    sftp.open.return_value = write_fh
+
+    with patch("ac_updater.ssh_client.paramiko.SSHClient", return_value=mock_ssh):
+        client = SshClient("h", "u")
+        client.connect()
+    client.write_entry_list("/home/acserver/ac-drift", [])
+
+    written: bytes = write_fh.write.call_args[0][0]
+    assert written == b""
