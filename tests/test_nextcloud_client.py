@@ -150,6 +150,94 @@ def test_upload_file_raises_on_500(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# upload_file — chunked path (large file)
+# ---------------------------------------------------------------------------
+
+
+def test_upload_file_uses_chunked_when_file_exceeds_chunk_size(tmp_path: Path) -> None:
+    archive = tmp_path / "big.7z"
+    archive.write_bytes(b"x" * 5)  # 5 bytes; patch chunk size to 2 so chunked triggers
+
+    def _dispatch(method: str, url: str, **_: object) -> MagicMock:
+        if method == "MKCOL":
+            return _mock_response(201)
+        if method == "MOVE":
+            return _mock_response(201)
+        return _mock_response(201)
+
+    with patch("ac_updater.nextcloud_client._CHUNK_SIZE", 2):
+        with patch("ac_updater.nextcloud_client.requests.request", side_effect=_dispatch):
+            with patch(
+                "ac_updater.nextcloud_client.requests.put", return_value=_mock_response(201)
+            ):
+                _client().upload_file(archive, "test.7z")
+
+
+def test_upload_file_chunked_raises_on_mkcol_failure(tmp_path: Path) -> None:
+    archive = tmp_path / "big.7z"
+    archive.write_bytes(b"x" * 5)
+
+    def _dispatch(method: str, url: str, **_: object) -> MagicMock:
+        if method == "MKCOL" and "uploads" in url:
+            return _mock_response(500)
+        return _mock_response(201)
+
+    with patch("ac_updater.nextcloud_client._CHUNK_SIZE", 2):
+        with patch("ac_updater.nextcloud_client.requests.request", side_effect=_dispatch):
+            with pytest.raises(NextcloudError, match="upload session"):
+                _client().upload_file(archive, "test.7z")
+
+
+def test_upload_file_chunked_raises_on_chunk_failure(tmp_path: Path) -> None:
+    archive = tmp_path / "big.7z"
+    archive.write_bytes(b"x" * 5)
+
+    def _dispatch(method: str, url: str, **_: object) -> MagicMock:
+        if method == "MKCOL":
+            return _mock_response(201)
+        return _mock_response(500)
+
+    with patch("ac_updater.nextcloud_client._CHUNK_SIZE", 2):
+        with patch("ac_updater.nextcloud_client.requests.request", side_effect=_dispatch):
+            with patch(
+                "ac_updater.nextcloud_client.requests.put", return_value=_mock_response(500)
+            ):
+                with pytest.raises(NextcloudError, match="Chunk upload failed"):
+                    _client().upload_file(archive, "test.7z")
+
+
+def test_upload_file_chunked_raises_on_assembly_failure(tmp_path: Path) -> None:
+    archive = tmp_path / "big.7z"
+    archive.write_bytes(b"x" * 5)
+
+    def _dispatch(method: str, url: str, **_: object) -> MagicMock:
+        if method == "MOVE":
+            return _mock_response(500, "error")
+        return _mock_response(201)
+
+    with patch("ac_updater.nextcloud_client._CHUNK_SIZE", 2):
+        with patch("ac_updater.nextcloud_client.requests.request", side_effect=_dispatch):
+            with patch(
+                "ac_updater.nextcloud_client.requests.put", return_value=_mock_response(201)
+            ):
+                with pytest.raises(NextcloudError, match="assembly failed"):
+                    _client().upload_file(archive, "test.7z")
+
+
+def test_upload_file_small_does_not_use_chunked_path(tmp_path: Path) -> None:
+    archive = tmp_path / "small.7z"
+    archive.write_bytes(b"x")  # 1 byte, chunk size default 10 MB
+
+    with patch("ac_updater.nextcloud_client.requests.request", return_value=_mock_response(201)):
+        with patch(
+            "ac_updater.nextcloud_client.requests.put", return_value=_mock_response(201)
+        ) as mock_put:
+            _client().upload_file(archive, "small.7z")
+    # Single PUT — no chunked session MKCOL/MOVE
+    mock_put.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
 # create_directory
 # ---------------------------------------------------------------------------
 

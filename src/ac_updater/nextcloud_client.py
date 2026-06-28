@@ -7,6 +7,7 @@ exception-based error handling.
 
 from __future__ import annotations
 
+import uuid
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,6 +17,7 @@ import requests
 from requests.auth import HTTPBasicAuth
 
 _DAV = "DAV:"
+_CHUNK_SIZE = 10 * 1024 * 1024  # 10 MB — stays under Cloudflare's body-size limits
 
 
 @dataclass(frozen=True)
@@ -40,7 +42,9 @@ class NextcloudClient:
 
     def __init__(self, server_url: str, username: str, password: str) -> None:
         base = server_url.rstrip("/")
+        self._username = username
         self._dav_base = f"{base}/remote.php/dav/files/{username}/"
+        self._uploads_base = f"{base}/remote.php/dav/uploads/{username}/"
         self._auth = HTTPBasicAuth(username, password)
 
     def _url(self, remote_path: str = "") -> str:
@@ -90,10 +94,20 @@ class NextcloudClient:
     # ------------------------------------------------------------------
 
     def upload_file(self, local_path: Path, remote_path: str) -> None:
-        """Upload local_path to remote_path, creating parent dirs as needed."""
+        """Upload local_path to remote_path, creating parent dirs as needed.
+
+        Files larger than _CHUNK_SIZE use Nextcloud's chunked-upload protocol
+        so that no single HTTP body exceeds proxy size limits (e.g. Cloudflare).
+        """
         parent = "/".join(remote_path.lstrip("/").split("/")[:-1])
         if parent:
             self._ensure_dirs(parent)
+        if local_path.stat().st_size > _CHUNK_SIZE:
+            self._upload_chunked(local_path, remote_path)
+        else:
+            self._upload_single(local_path, remote_path)
+
+    def _upload_single(self, local_path: Path, remote_path: str) -> None:
         resp = requests.put(
             self._url(remote_path),
             data=local_path.open("rb"),
@@ -102,6 +116,51 @@ class NextcloudClient:
         )
         if resp.status_code not in (200, 201, 204):
             raise NextcloudError(f"Upload failed ({resp.status_code}): {resp.text[:300]}")
+
+    def _upload_chunked(self, local_path: Path, remote_path: str) -> None:
+        """Nextcloud chunked-upload protocol (dav/uploads).
+
+        1. MKCOL  /remote.php/dav/uploads/{user}/{transfer_id}/
+        2. PUT    .../uploads/{user}/{transfer_id}/{byte_offset}  (per chunk)
+        3. MOVE   .../uploads/{user}/{transfer_id}/.file
+                  Destination: .../files/{user}/{remote_path}
+        """
+        transfer_id = uuid.uuid4().hex
+        upload_dir = f"{self._uploads_base}{transfer_id}/"
+
+        resp = requests.request("MKCOL", upload_dir, auth=self._auth, timeout=30)
+        if resp.status_code not in (201, 405):
+            raise NextcloudError(f"Could not create upload session ({resp.status_code})")
+
+        file_size = local_path.stat().st_size
+        with local_path.open("rb") as fh:
+            offset = 0
+            while True:
+                chunk = fh.read(_CHUNK_SIZE)
+                if not chunk:
+                    break
+                chunk_url = f"{upload_dir}{offset}"
+                resp = requests.put(chunk_url, data=chunk, auth=self._auth, timeout=300)
+                if resp.status_code not in (200, 201, 204):
+                    raise NextcloudError(
+                        f"Chunk upload failed at offset {offset} ({resp.status_code})"
+                    )
+                offset += len(chunk)
+
+        resp = requests.request(
+            "MOVE",
+            f"{upload_dir}.file",
+            headers={
+                "Destination": self._url(remote_path),
+                "OC-Total-Length": str(file_size),
+            },
+            auth=self._auth,
+            timeout=60,
+        )
+        if resp.status_code not in (200, 201, 204):
+            raise NextcloudError(
+                f"Chunked upload assembly failed ({resp.status_code}): {resp.text[:300]}"
+            )
 
     def create_directory(self, remote_path: str) -> None:
         """Create a remote directory (no-op if it already exists)."""
