@@ -437,6 +437,99 @@ def test_stop_service_raises_on_failure() -> None:
         client.stop_service("ac-drift.service")
 
 
+def test_start_service_calls_systemctl_start() -> None:
+    mock_ssh = _make_mock_ssh()
+    mock_ssh.exec_command.return_value = (MagicMock(), _make_stdout("", 0), _make_stderr())
+
+    with patch("ac_updater.ssh_client.paramiko.SSHClient", return_value=mock_ssh):
+        client = SshClient("h", "u")
+        client.connect()
+    client.start_service("ac-drift.service")
+
+    cmd: str = mock_ssh.exec_command.call_args[0][0]
+    assert "sudo systemctl start" in cmd
+    assert "ac-drift.service" in cmd
+
+
+def test_start_service_raises_on_failure() -> None:
+    import pytest
+
+    mock_ssh = _make_mock_ssh()
+    mock_ssh.exec_command.return_value = (
+        MagicMock(), _make_stdout("", 1), _make_stderr("Failed to start")
+    )
+
+    with patch("ac_updater.ssh_client.paramiko.SSHClient", return_value=mock_ssh):
+        client = SshClient("h", "u")
+        client.connect()
+
+    with pytest.raises(RuntimeError, match="Failed to start"):
+        client.start_service("ac-drift.service")
+
+
+def test_restart_service_calls_systemctl_restart() -> None:
+    mock_ssh = _make_mock_ssh()
+    mock_ssh.exec_command.return_value = (MagicMock(), _make_stdout("", 0), _make_stderr())
+
+    with patch("ac_updater.ssh_client.paramiko.SSHClient", return_value=mock_ssh):
+        client = SshClient("h", "u")
+        client.connect()
+    client.restart_service("ac-drift.service")
+
+    cmd: str = mock_ssh.exec_command.call_args[0][0]
+    assert "sudo systemctl restart" in cmd
+    assert "ac-drift.service" in cmd
+
+
+def test_get_service_status_returns_active() -> None:
+    mock_ssh = _make_mock_ssh()
+    mock_ssh.exec_command.return_value = (MagicMock(), _make_stdout("active", 0), _make_stderr())
+
+    with patch("ac_updater.ssh_client.paramiko.SSHClient", return_value=mock_ssh):
+        client = SshClient("h", "u")
+        client.connect()
+    assert client.get_service_status("ac-drift.service") == "active"
+
+
+def test_get_service_status_returns_inactive() -> None:
+    mock_ssh = _make_mock_ssh()
+    mock_ssh.exec_command.return_value = (MagicMock(), _make_stdout("inactive", 0), _make_stderr())
+
+    with patch("ac_updater.ssh_client.paramiko.SSHClient", return_value=mock_ssh):
+        client = SshClient("h", "u")
+        client.connect()
+    assert client.get_service_status("ac-drift.service") == "inactive"
+
+
+def test_get_service_status_uses_or_true_to_suppress_exit_code() -> None:
+    mock_ssh = _make_mock_ssh()
+    mock_ssh.exec_command.return_value = (MagicMock(), _make_stdout("inactive", 0), _make_stderr())
+
+    with patch("ac_updater.ssh_client.paramiko.SSHClient", return_value=mock_ssh):
+        client = SshClient("h", "u")
+        client.connect()
+    client.get_service_status("ac-drift.service")
+
+    cmd: str = mock_ssh.exec_command.call_args[0][0]
+    assert "|| true" in cmd
+
+
+def test_restart_service_raises_on_failure() -> None:
+    import pytest
+
+    mock_ssh = _make_mock_ssh()
+    mock_ssh.exec_command.return_value = (
+        MagicMock(), _make_stdout("", 1), _make_stderr("Failed to restart")
+    )
+
+    with patch("ac_updater.ssh_client.paramiko.SSHClient", return_value=mock_ssh):
+        client = SshClient("h", "u")
+        client.connect()
+
+    with pytest.raises(RuntimeError, match="Failed to restart"):
+        client.restart_service("ac-drift.service")
+
+
 # ---------------------------------------------------------------------------
 # list_server_cars
 # ---------------------------------------------------------------------------

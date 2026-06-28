@@ -308,7 +308,7 @@ class _App(tk.Tk):
         # Right: content on the selected server
         server_col = ttk.LabelFrame(columns, text="On Server", padding=4)
         server_col.grid(row=0, column=1, sticky="nsew")
-        server_col.grid_rowconfigure(1, weight=1)
+        server_col.grid_rowconfigure(2, weight=1)
         server_col.grid_rowconfigure(3, weight=1)
         server_col.grid_columnconfigure(0, weight=1)
 
@@ -317,7 +317,23 @@ class _App(tk.Tk):
         )
         self._server_mgmt_placeholder.grid(row=0, column=0, rowspan=5, pady=20)
 
-        # Cars management (hidden until a server is selected)
+        # Service control row (row=0, hidden until a server is selected)
+        svc_row = ttk.Frame(server_col)
+        ttk.Button(svc_row, text="Start", command=self._on_start_service).pack(side="left")
+        ttk.Button(svc_row, text="Stop", command=self._on_stop_service).pack(
+            side="left", padx=(4, 0)
+        )
+        ttk.Button(svc_row, text="Restart", command=self._on_restart_service).pack(
+            side="left", padx=(4, 0)
+        )
+        ttk.Separator(svc_row, orient="vertical").pack(side="left", fill="y", padx=(10, 8))
+        ttk.Label(svc_row, text="Status:").pack(side="left")
+        self._svc_status_var = tk.StringVar(value="—")
+        self._svc_status_label = ttk.Label(svc_row, textvariable=self._svc_status_var)
+        self._svc_status_label.pack(side="left", padx=(4, 0))
+        self._server_svc_row = svc_row
+
+        # Cars management (row=1, hidden until a server is selected)
         cars_lf = ttk.LabelFrame(server_col, text="Cars", padding=4)
         cars_lf.grid_rowconfigure(0, weight=1)
         cars_lf.grid_columnconfigure(0, weight=1)
@@ -335,7 +351,7 @@ class _App(tk.Tk):
         ).pack(side="left", padx=(4, 0))
         self._server_cars_lf = cars_lf
 
-        # Tracks management (hidden until a server is selected)
+        # Tracks management (row=2, hidden until a server is selected)
         tracks_lf = ttk.LabelFrame(server_col, text="Tracks", padding=4)
         tracks_lf.grid_rowconfigure(1, weight=1)
         tracks_lf.grid_columnconfigure(0, weight=1)
@@ -1005,10 +1021,13 @@ class _App(tk.Tk):
     # ------------------------------------------------------------------
 
     def _clear_server_mgmt_panel(self) -> None:
+        self._server_svc_row.grid_remove()
         self._server_cars_lf.grid_remove()
         self._server_tracks_lf.grid_remove()
         self._server_mgmt_placeholder.grid(row=0, column=0, rowspan=5, pady=20)
         self._active_track_var.set("—")
+        self._svc_status_var.set("—")
+        self._svc_status_label.configure(foreground=_GRAY)
 
     def _on_server_selected(self, event: object = None) -> None:
         display = self._ssh_server_var.get()
@@ -1024,8 +1043,12 @@ class _App(tk.Tk):
                 cars = client.list_server_cars(server_dir)
                 tracks = client.list_server_tracks(server_dir)
                 active = client.read_active_track(server_dir)
+                status = client.get_service_status(f"{server_name}.service")
                 self.after(
-                    0, lambda: self._on_server_mgmt_loaded(server_name, cars, tracks, active)
+                    0,
+                    lambda: self._on_server_mgmt_loaded(
+                        server_name, cars, tracks, active, status
+                    ),
                 )
             except Exception as exc:
                 log.error("Failed to load server content for %s: %s", server_name, exc)
@@ -1038,22 +1061,76 @@ class _App(tk.Tk):
         cars: list[str],
         tracks: list[str],
         active_track: str,
+        service_status: str = "unknown",
     ) -> None:
         if server_name != self._current_server_name:
             return
         self._server_mgmt_placeholder.grid_remove()
 
+        self._server_svc_row.grid(row=0, column=0, sticky="ew", pady=(0, 6))
+        self._update_svc_status(service_status)
         self._server_cars_panel.set_items(cars)
-        self._server_cars_lf.grid(row=0, column=0, sticky="nsew", padx=(0, 0), pady=(0, 4))
+        self._server_cars_lf.grid(row=1, column=0, sticky="nsew", pady=(0, 4))
 
         self._active_track_var.set(active_track or "—")
         self._server_tracks_panel.set_items(tracks)
-        self._server_tracks_lf.grid(row=1, column=0, sticky="nsew")
+        self._server_tracks_lf.grid(row=2, column=0, sticky="nsew")
 
         log.info(
-            "Server management panel loaded: %s — %d cars, %d tracks",
-            server_name, len(cars), len(tracks),
+            "Server management panel loaded: %s — %d cars, %d tracks, status=%s",
+            server_name, len(cars), len(tracks), service_status,
         )
+
+    def _update_svc_status(self, status: str) -> None:
+        self._svc_status_var.set(status)
+        color = {
+            "active": _GREEN,
+            "activating": _ORANGE,
+            "deactivating": _ORANGE,
+            "failed": _RED,
+        }.get(status, _GRAY)
+        self._svc_status_label.configure(foreground=color)
+
+    def _on_start_service(self) -> None:
+        self._run_service_command("start")
+
+    def _on_stop_service(self) -> None:
+        self._run_service_command("stop")
+
+    def _on_restart_service(self) -> None:
+        self._run_service_command("restart")
+
+    def _run_service_command(self, action: str) -> None:
+        if self._ssh_client is None or not self._current_server_name:
+            return
+        service = f"{self._current_server_name}.service"
+        client = self._ssh_client
+        self._start_progress(f"{action.capitalize()}ing {service}…")
+
+        def _worker() -> None:
+            error: str | None = None
+            try:
+                if action == "start":
+                    client.start_service(service)
+                elif action == "stop":
+                    client.stop_service(service)
+                else:
+                    client.restart_service(service)
+            except RuntimeError as exc:
+                error = str(exc)
+            new_status = client.get_service_status(service)
+            self.after(0, self._stop_progress)
+            self.after(0, lambda: self._update_svc_status(new_status))
+            ts = datetime.now().strftime("%H:%M:%S")
+            if error:
+                self.after(0, lambda: self._append_server_result(f"[{ts}]  {error}", "error"))
+                self.after(0, lambda: self._set_status(error, _RED))
+            else:
+                msg = f"{action.capitalize()}ed {service}"
+                self.after(0, lambda: self._append_server_result(f"[{ts}]  {msg}", "ok"))
+                self.after(0, lambda: self._set_status(msg, _GREEN))
+
+        threading.Thread(target=_worker, daemon=True).start()
 
     def _on_fix_permissions(self, category: str) -> None:
         if self._ssh_client is None or not self._current_server_name:
@@ -1105,33 +1182,48 @@ class _App(tk.Tk):
         server_name = self._current_server_name
         server_label = get_display_name(server_name)
         service = f"{server_name}.service"
-        extra = (
-            "\n\nentry_list.ini will be rebuilt from remaining cars."
-            if category == "cars"
-            else ""
-        )
-        if not messagebox.askyesno(
-            "Confirm Delete",
-            f"Delete {len(selected)} {category} from {server_label}?\n"
-            f"This will stop {service}.{extra}",
-            parent=self,
-        ):
+        active_track = self._active_track_var.get()
+        active_deleted = category == "tracks" and active_track in selected and active_track != "—"
+
+        # Only cars and active-track deletion need a service stop/start cycle
+        needs_service_cycle = category == "cars" or active_deleted
+        if needs_service_cycle:
+            detail = (
+                "\n\nentry_list.ini will be rebuilt and the service restarted."
+                if category == "cars"
+                else (
+                    f"\n\nActive track '{active_track}' will be deleted — "
+                    "the next available track will be set and the service restarted."
+                )
+            )
+            confirm_msg = (
+                f"Delete {len(selected)} {category} from {server_label}?\n"
+                f"This will stop {service}.{detail}"
+            )
+        else:
+            confirm_msg = f"Delete {len(selected)} {category} from {server_label}?"
+
+        if not messagebox.askyesno("Confirm Delete", confirm_msg, parent=self):
             return
 
         client = self._ssh_client
         server_dir = f"{_AC_HOME}/{server_name}"
-        self._start_progress(f"Stopping {service}…")
+        self._start_progress(
+            f"Stopping {service}…" if needs_service_cycle else f"Deleting {category}…"
+        )
 
         def _worker() -> None:
             error: str | None = None
-            try:
-                client.stop_service(service)
-                ts = datetime.now().strftime("%H:%M:%S")
-                self.after(0, lambda: self._append_server_result(
-                    f"[{ts}]  Stopped {service}", "ok"
-                ))
-            except RuntimeError as exc:
-                error = f"Failed to stop {service}: {exc}"
+
+            if needs_service_cycle:
+                try:
+                    client.stop_service(service)
+                    ts = datetime.now().strftime("%H:%M:%S")
+                    self.after(0, lambda: self._append_server_result(
+                        f"[{ts}]  Stopped {service}", "ok"
+                    ))
+                except RuntimeError as exc:
+                    error = f"Failed to stop {service}: {exc}"
 
             if error is None:
                 try:
@@ -1159,6 +1251,35 @@ class _App(tk.Tk):
                     ))
                 except Exception as exc:
                     error = f"Failed to rebuild entry_list.ini: {exc}"
+
+            if error is None and active_deleted:
+                remaining_tracks = client.list_server_tracks(server_dir)
+                if remaining_tracks:
+                    next_track = remaining_tracks[0]
+                    try:
+                        client.write_active_track(server_dir, next_track)
+                        self.after(0, lambda: self._active_track_var.set(next_track))
+                        ts = datetime.now().strftime("%H:%M:%S")
+                        self.after(0, lambda: self._append_server_result(
+                            f"[{ts}]  Active track updated to {next_track}", "ok"
+                        ))
+                    except Exception as exc:
+                        error = f"Failed to update active track: {exc}"
+
+            if error is None and needs_service_cycle:
+                action = "restart" if active_deleted else "start"
+                try:
+                    if action == "restart":
+                        client.restart_service(service)
+                    else:
+                        client.start_service(service)
+                    ts = datetime.now().strftime("%H:%M:%S")
+                    verb = "Restarted" if action == "restart" else "Started"
+                    self.after(0, lambda: self._append_server_result(
+                        f"[{ts}]  {verb} {service}", "ok"
+                    ))
+                except RuntimeError as exc:
+                    error = f"Failed to {action} {service}: {exc}"
 
             self.after(0, self._stop_progress)
             if error:
@@ -1199,20 +1320,35 @@ class _App(tk.Tk):
             return
         track = track.strip()
 
+        service = f"{self._current_server_name}.service"
+
         def _worker() -> None:
+            error: str | None = None
             try:
                 client.write_active_track(server_dir, track)
                 self.after(0, lambda: self._active_track_var.set(track))
                 ts = datetime.now().strftime("%H:%M:%S")
                 self.after(0, lambda: self._append_server_result(
-                    f"[{ts}]  Active track set to {track} (restart server to apply)", "ok"
-                ))
-                self.after(0, lambda: self._set_status(
-                    f"Active track: {track} — restart server to apply", _ORANGE
+                    f"[{ts}]  Active track set to {track}", "ok"
                 ))
             except Exception as exc:
-                err = str(exc)
-                self.after(0, lambda: self._set_status(err, _RED))
+                error = str(exc)
+
+            if error is None:
+                try:
+                    client.restart_service(service)
+                    ts = datetime.now().strftime("%H:%M:%S")
+                    self.after(0, lambda: self._append_server_result(
+                        f"[{ts}]  Restarted {service}", "ok"
+                    ))
+                    self.after(0, lambda: self._set_status(
+                        f"Active track: {track} — {service} restarted", _GREEN
+                    ))
+                except RuntimeError as exc:
+                    error = str(exc)
+
+            if error:
+                self.after(0, lambda: self._set_status(error, _RED))
 
         threading.Thread(target=_worker, daemon=True).start()
 
@@ -1345,8 +1481,23 @@ class _App(tk.Tk):
                     error = f"Failed to rebuild entry_list.ini: {exc}"
                     log.error("entry_list rebuild failed: %s", exc)
 
+            started = False
+            if updated:
+                try:
+                    client.start_service(service)
+                    started = True
+                    ts3 = datetime.now().strftime("%H:%M:%S")
+                    self.after(0, lambda: self._append_server_result(
+                        f"[{ts3}]  Started {service}", "ok"
+                    ))
+                except RuntimeError as exc:
+                    error = f"Failed to start {service}: {exc}"
+                    log.error("Start service failed: %s", exc)
+
             self.after(0, self._stop_progress)
-            self.after(0, lambda: self._on_post_deploy_done(service, stopped, updated, error))
+            self.after(
+                0, lambda: self._on_post_deploy_done(service, stopped, updated, started, error)
+            )
 
         threading.Thread(target=_worker, daemon=True).start()
 
@@ -1355,15 +1506,20 @@ class _App(tk.Tk):
         service: str,
         stopped: bool,
         updated: bool,
+        started: bool,
         error: str | None,
     ) -> None:
         self._ssh_deploy_btn.state(["!disabled"])
         if error:
             self._append_server_result(f"    {error}", "error")
             self._set_status(error, _RED)
+        elif started:
+            self._set_status(
+                f"Done — entry_list.ini rebuilt and {service} started", _GREEN
+            )
         elif stopped and updated:
             self._set_status(
-                f"Done — {service} stopped and entry_list.ini rebuilt", _GREEN
+                f"Done — {service} stopped and entry_list.ini rebuilt", _ORANGE
             )
         elif stopped:
             self._set_status(f"{service} stopped (entry_list.ini not updated)", _ORANGE)
