@@ -211,6 +211,7 @@ class FileBrowserPanel(ttk.Frame):
         self._archive_path: Path | None = None
         self._archive_name = "upload.7z"
         self._on_upload_done: Callable[[bool], None] | None = None
+        self._on_upload_progress: Callable[[int, int], None] | None = None
         self._build()
 
     # ------------------------------------------------------------------
@@ -228,19 +229,23 @@ class FileBrowserPanel(ttk.Frame):
         path: Path,
         name: str,
         on_done: Callable[[bool], None] | None = None,
+        on_progress: Callable[[int, int], None] | None = None,
     ) -> None:
         """Show the upload area for an archive that is ready to upload."""
         self._archive_path = path
         self._archive_name = name
         self._on_upload_done = on_done
+        self._on_upload_progress = on_progress
         self._upload_name_var.set(name)
         self._update_path_display()
+        self._upload_btn.state(["!disabled"])
         self._upload_footer.pack(fill="x")
 
     def clear_archive(self) -> None:
         """Hide the upload area without affecting navigation."""
         self._archive_path = None
         self._on_upload_done = None
+        self._on_upload_progress = None
         self._upload_footer.pack_forget()
         self._hide_upload_progress()
 
@@ -505,9 +510,13 @@ class FileBrowserPanel(ttk.Frame):
         self._upload_btn.state(["disabled"])
         client = self._client
         callback = self._on_upload_done
+        ext_progress = self._on_upload_progress
 
         def on_progress(sent: int, total: int) -> None:
             self.after(0, lambda: self._show_upload_progress(sent, total))
+            if ext_progress is not None:
+                ep = ext_progress
+                self.after(0, lambda: ep(sent, total))
 
         def _do() -> None:
             success = False

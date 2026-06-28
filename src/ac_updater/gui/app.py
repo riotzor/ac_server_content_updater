@@ -673,7 +673,7 @@ class _App(tk.Tk):
         ).pack(anchor="w", pady=(2, 0))
 
         # ── Left: Archive log ────────────────────────────────────────────
-        log_lf = ttk.LabelFrame(left, text="Archive Log", padding=4)
+        log_lf = ttk.LabelFrame(left, text="Logs", padding=4)
         log_lf.pack(fill="both", expand=True)
         self._nc_log_text = tk.Text(
             log_lf, height=10, state="disabled", wrap="word",
@@ -1112,7 +1112,6 @@ class _App(tk.Tk):
 
         self._disable_buttons()
         self._nc_start_progress("Reading server content…", 1)
-        self._nc_attach_log_handler()
         log.info("Server Pack initiated: server=%s  dir=%s", label, server_dir)
 
         def _worker() -> None:
@@ -1136,7 +1135,6 @@ class _App(tk.Tk):
                 err = str(exc)
                 log.error("Failed to read server content: %s", exc)
                 self.after(0, self._nc_stop_progress)
-                self.after(0, self._nc_detach_log_handler)
                 self.after(0, lambda: messagebox.showerror("Server Pack failed", err))
                 self.after(0, self._enable_buttons)
 
@@ -1202,11 +1200,25 @@ class _App(tk.Tk):
         self, nc_client: NextcloudClient, tmp_path: Path, archive_name: str
     ) -> None:
         self._nc_stop_progress()
-        self._nc_detach_log_handler()
+        # Keep log handler attached so upload logs appear in the Logs panel.
         log.info("Archive ready for upload: %s  (as '%s')", tmp_path, archive_name)
         self._set_status("Archive ready — browse Nextcloud and click Upload Here", _ORANGE)
+        # Switch progress bar to byte-based upload mode.
+        self._nc_progress.configure(maximum=100, value=0)
+        self._nc_progress_var.set("Waiting for upload…")
+
+        def on_upload_progress(sent: int, total: int) -> None:
+            pct = int(sent / total * 100) if total else 100
+            msg = (
+                f"Uploading… {sent / 1_048_576:.1f} / {total / 1_048_576:.1f} MB"
+                f"  ({pct}%)"
+            )
+            self._nc_progress.configure(value=pct)
+            self._nc_progress_var.set(msg)
 
         def _cleanup(success: bool) -> None:
+            self._nc_detach_log_handler()
+            self._nc_stop_progress()
             if success:
                 log.info("Upload completed successfully")
                 self._set_status("Upload complete", _GREEN)
@@ -1221,7 +1233,11 @@ class _App(tk.Tk):
             self._enable_buttons()
 
         if self._nc_file_panel is not None:
-            self._nc_file_panel.set_archive(tmp_path, archive_name, on_done=_cleanup)
+            self._nc_file_panel.set_archive(
+                tmp_path, archive_name,
+                on_done=_cleanup,
+                on_progress=on_upload_progress,
+            )
         else:
             # Fallback: open standalone dialog if file browser not yet visible
             uploaded = open_file_browser(
