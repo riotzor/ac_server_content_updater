@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import shlex
 import stat as stat_module
 from collections.abc import Callable
@@ -164,7 +165,12 @@ class SshClient:
 
         for i, (category, name) in enumerate(items):
             src = f"{share_path}/content/{category}/{name}"
-            dst_parent = f"{home}/{server_name}/content/{category}"
+            # Tracks are stored under content/tracks/csp/ on the AC server
+            dst_parent = (
+                f"{home}/{server_name}/content/tracks/csp"
+                if category == "tracks"
+                else f"{home}/{server_name}/content/{category}"
+            )
             try:
                 if not self._path_exists(src):
                     log.debug("Skipped (not on share): %s/%s", category, name)
@@ -253,6 +259,121 @@ class SshClient:
             fh.write(content)
 
         log.info("entry_list.ini written: %d car(s)", len(cars))
+
+    def list_server_tracks(self, server_dir: str) -> list[str]:
+        """Return sorted track directory names from <server_dir>/content/tracks/csp/."""
+        assert self._sftp is not None, "Not connected"
+        tracks_path = f"{server_dir}/content/tracks/csp"
+        try:
+            names = self._sftp.listdir(tracks_path)
+        except OSError:
+            return []
+        tracks: list[str] = []
+        for name in names:
+            try:
+                st = self._sftp.stat(f"{tracks_path}/{name}")
+                if stat_module.S_ISDIR(st.st_mode):
+                    tracks.append(name)
+            except OSError:
+                pass
+        result = sorted(tracks)
+        log.info("Server tracks at %s: %d found", server_dir, len(result))
+        return result
+
+    def delete_content(
+        self,
+        server_dir: str,
+        category: str,
+        names: list[str],
+    ) -> None:
+        """Remove content directories from the server.
+
+        category must be "cars" or "tracks".
+        Cars live at content/cars/<name>; tracks at content/tracks/csp/<name>.
+        """
+        base = (
+            f"{server_dir}/content/tracks/csp"
+            if category == "tracks"
+            else f"{server_dir}/content/cars"
+        )
+        for name in names:
+            path = f"{base}/{name}"
+            self._exec(f"rm -rf {shlex.quote(path)}")
+            log.info("Deleted %s/%s from %s", category, name, server_dir)
+
+    def fix_permissions(
+        self,
+        server_dir: str,
+        category: str,
+        names: list[str],
+    ) -> None:
+        """Set ownership acserver:acserver and mode 775 on content directories.
+
+        category must be "cars" or "tracks".
+        """
+        base = (
+            f"{server_dir}/content/tracks/csp"
+            if category == "tracks"
+            else f"{server_dir}/content/cars"
+        )
+        owner = f"{self._username}:{self._username}"
+        for name in names:
+            path = f"{base}/{name}"
+            self._exec(
+                f"chown -R {shlex.quote(owner)} {shlex.quote(path)} && "
+                f"chmod -R 775 {shlex.quote(path)}"
+            )
+            log.info("Fixed permissions on %s/%s", category, name)
+
+    def read_active_track(self, server_dir: str) -> str:
+        """Return the track name currently set in server_cfg.ini, or empty string."""
+        assert self._sftp is not None, "Not connected"
+        path = f"{server_dir}/cfg/server_cfg.ini"
+        try:
+            with self._sftp.open(path, "r") as fh:
+                content: str = fh.read().decode("utf-8", errors="replace")
+        except OSError:
+            return ""
+        for line in content.splitlines():
+            if line.strip().startswith("TRACK="):
+                track_val = line.strip()[6:]
+                # CSP format: csp/<ver>/../<flags>/../<track_name>
+                parts = track_val.split("/../")
+                return parts[-1] if len(parts) > 1 else track_val
+        return ""
+
+    def write_active_track(self, server_dir: str, track_name: str) -> None:
+        """Update the TRACK= line in server_cfg.ini to point at track_name.
+
+        Preserves the existing CSP prefix (csp/<ver>/../<flags>/..) if present;
+        falls back to csp/2144/../E/ if no TRACK line exists yet.
+        Requires a server restart to take effect.
+        """
+        assert self._sftp is not None, "Not connected"
+        path = f"{server_dir}/cfg/server_cfg.ini"
+        log.info("Setting active track: %s → %s", server_dir, track_name)
+        try:
+            with self._sftp.open(path, "r") as fh:
+                content: str = fh.read().decode("utf-8", errors="replace")
+        except OSError:
+            content = ""
+
+        def _replace(m: re.Match[str]) -> str:
+            existing = m.group(1)
+            parts = existing.split("/../")
+            if len(parts) > 1:
+                return "TRACK=" + "/../".join(parts[:-1]) + "/../" + track_name
+            return f"TRACK=csp/2144/../E/../{track_name}"
+
+        new_content, count = re.subn(
+            r"^TRACK=(.+)$", _replace, content, flags=re.MULTILINE
+        )
+        if not count:
+            new_content = content.rstrip("\n") + f"\nTRACK=csp/2144/../E/../{track_name}\n"
+
+        with self._sftp.open(path, "w") as fh:
+            fh.write(new_content.encode("utf-8"))
+        log.info("Active track set to %s", track_name)
 
     # ------------------------------------------------------------------
     # Internal helpers
