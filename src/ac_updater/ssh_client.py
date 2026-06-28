@@ -16,6 +16,70 @@ _ProgressCallback = Callable[[int, int], None]
 _SHARE_PATH = "/mnt/ac-share"
 _AC_HOME = "/home/acserver"
 
+_DEFAULT_CAR_FIELDS: dict[str, str] = {
+    "SKIN": "",
+    "SPECTATOR_MODE": "0",
+    "DRIVERNAME": "",
+    "TEAM": "",
+    "GUID": "",
+    "BALLAST": "0",
+    "RESTRICTOR": "0",
+}
+
+
+def _parse_entry_list(text: str) -> dict[str, dict[str, str]]:
+    """Parse entry_list.ini text into ``{model: {field: value}}``.
+
+    The MODEL key is used as the dict key and is NOT included in the inner dict.
+    When a model appears multiple times (multiple slots), the first occurrence wins.
+    Returns an empty dict for an empty or unparseable file.
+    """
+    result: dict[str, dict[str, str]] = {}
+    sections: list[dict[str, str]] = []
+    current: dict[str, str] | None = None
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith(";"):
+            continue
+        if line.startswith("[CAR_"):
+            current = {}
+            sections.append(current)
+        elif current is not None and "=" in line:
+            key, _, val = line.partition("=")
+            current[key.strip().upper()] = val.strip()
+    for section in sections:
+        model = section.pop("MODEL", None)
+        if model and model not in result:
+            result[model] = section
+    return result
+
+
+def merge_entry_list(
+    all_car_names: list[str],
+    existing: dict[str, dict[str, str]],
+    default_skin: Callable[[str], str] | None = None,
+) -> list[dict[str, str]]:
+    """Build ordered car entries, preserving settings for cars already in the file.
+
+    For each name in all_car_names:
+      - If the model exists in ``existing``, its fields are carried over unchanged.
+      - If it is new, default fields are used, with SKIN from ``default_skin`` if given.
+
+    Returns a list of per-car dicts each containing MODEL plus all other fields,
+    in all_car_names order.  Sequential [CAR_N] numbering is applied by
+    write_entry_list.
+    """
+    entries: list[dict[str, str]] = []
+    for car_name in all_car_names:
+        if car_name in existing:
+            fields = dict(existing[car_name])
+        else:
+            fields = dict(_DEFAULT_CAR_FIELDS)
+            if default_skin is not None:
+                fields["SKIN"] = default_skin(car_name)
+        entries.append({"MODEL": car_name, **fields})
+    return entries
+
 
 @dataclass
 class DeployResult:
@@ -248,40 +312,50 @@ class SshClient:
         log.info("Server cars at %s: %d found", server_dir, len(result))
         return result
 
-    def write_entry_list(
-        self,
-        server_dir: str,
-        cars: list[tuple[str, str]],
-    ) -> None:
-        """Overwrite <server_dir>/cfg/entry_list.ini with all supplied cars.
+    def read_entry_list(self, server_dir: str) -> dict[str, dict[str, str]]:
+        """Parse <server_dir>/cfg/entry_list.ini into ``{model: {field: value}}``.
 
-        Entries are numbered sequentially from CAR_0. The file is fully
-        replaced on each call so the list always reflects the current state
-        of the server's content/cars/ directory.
+        Returns an empty dict if the file does not exist or cannot be read.
         """
         assert self._sftp is not None, "Not connected"
         path = f"{server_dir}/cfg/entry_list.ini"
-        log.info("Writing entry_list.ini: %s  cars=%d", path, len(cars))
+        try:
+            with self._sftp.open(path, "r") as fh:
+                content: str = fh.read().decode("utf-8", errors="replace")
+        except OSError:
+            log.debug("entry_list.ini not found at %s — starting fresh", path)
+            return {}
+        return _parse_entry_list(content)
 
-        entries = []
-        for n, (car_name, skin) in enumerate(cars):
-            entries.append(
-                f"[CAR_{n}]\n"
-                f"MODEL={car_name}\n"
-                f"SKIN={skin}\n"
-                f"SPECTATOR_MODE=0\n"
-                f"DRIVERNAME=\n"
-                f"TEAM=\n"
-                f"GUID=\n"
-                f"BALLAST=0\n"
-                f"RESTRICTOR=0\n"
-            )
+    def write_entry_list(
+        self,
+        server_dir: str,
+        entries: list[dict[str, str]],
+    ) -> None:
+        """Write <server_dir>/cfg/entry_list.ini from a list of per-car dicts.
 
-        content = "\n".join(entries).encode("utf-8")
+        Each dict must contain MODEL plus any other fields (SKIN, SPECTATOR_MODE,
+        etc.).  Sections are numbered sequentially from CAR_0; all other field
+        values and ordering are preserved exactly as supplied.
+        """
+        assert self._sftp is not None, "Not connected"
+        path = f"{server_dir}/cfg/entry_list.ini"
+        log.info("Writing entry_list.ini: %s  cars=%d", path, len(entries))
+
+        sections: list[str] = []
+        for n, car in enumerate(entries):
+            lines = [f"[CAR_{n}]", f"MODEL={car.get('MODEL', '')}"]
+            for key, val in car.items():
+                if key != "MODEL":
+                    lines.append(f"{key}={val}")
+            lines.append("")  # produces a trailing newline when joined
+            sections.append("\n".join(lines))
+
+        content = "\n".join(sections).encode("utf-8")
         with self._sftp.open(path, "w") as fh:
             fh.write(content)
 
-        log.info("entry_list.ini written: %d car(s)", len(cars))
+        log.info("entry_list.ini written: %d car(s)", len(entries))
 
     def list_server_tracks(self, server_dir: str) -> list[str]:
         """Return sorted track directory names from <server_dir>/content/tracks/csp/."""
