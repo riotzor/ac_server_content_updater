@@ -464,6 +464,10 @@ class _App(tk.Tk):
             command=lambda: self._on_fix_permissions("cars"),
         ).pack(side="left")
         ttk.Button(
+            car_btns, text="Set as AI",
+            command=self._on_set_as_ai,
+        ).pack(side="left", padx=(4, 0))
+        ttk.Button(
             car_btns, text="Delete",
             command=lambda: self._on_delete_content("cars"),
         ).pack(side="left", padx=(4, 0))
@@ -1288,6 +1292,60 @@ class _App(tk.Tk):
                 msg = f"{action.capitalize()}ed {service}"
                 self.after(0, lambda: self._append_server_result(f"[{ts}]  {msg}", "ok"))
                 self.after(0, lambda: self._set_status(msg, _GREEN))
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _on_set_as_ai(self) -> None:
+        if self._ssh_client is None or not self._current_server_name:
+            return
+        selected = self._server_cars_panel.get_selected()
+        if not selected:
+            messagebox.showwarning("Nothing selected", "Select cars to mark as AI.", parent=self)
+            return
+        if not messagebox.askyesno(
+            "Set as AI",
+            f"Add AI=fixed to {len(selected)} car entry(s) in entry_list.ini?\n\n"
+            "Restart the service for changes to take effect.",
+            parent=self,
+        ):
+            return
+
+        client = self._ssh_client
+        server_dir = f"{_AC_HOME}/{self._current_server_name}"
+        install_dir = self._install_dir
+        self._start_progress("Updating entry_list.ini…")
+
+        def _worker() -> None:
+            error: str | None = None
+            try:
+                all_cars = client.list_server_cars(server_dir)
+                existing = client.read_entry_list(server_dir)
+                entries = merge_entry_list(
+                    all_cars, existing,
+                    lambda car: _get_skin_for_car(install_dir, car),
+                )
+                for entry in entries:
+                    if entry.get("MODEL") in selected:
+                        entry["AI"] = "fixed"
+                client.write_entry_list(server_dir, entries)
+            except Exception as exc:
+                error = str(exc)
+
+            self.after(0, self._stop_progress)
+            ts = datetime.now().strftime("%H:%M:%S")
+            if error:
+                self.after(0, lambda: self._append_server_result(
+                    f"[{ts}]  Set AI failed: {error}", "error"
+                ))
+                self.after(0, lambda: self._set_status("Set AI failed (see results)", _RED))
+            else:
+                n = len(selected)
+                self.after(0, lambda: self._append_server_result(
+                    f"[{ts}]  AI=fixed set on {n} car(s) — restart service to apply", "ok"
+                ))
+                self.after(0, lambda: self._set_status(
+                    f"AI=fixed set on {n} car(s)", _GREEN
+                ))
 
         threading.Thread(target=_worker, daemon=True).start()
 
