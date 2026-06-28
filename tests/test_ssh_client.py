@@ -551,3 +551,294 @@ def test_write_entry_list_empty_cars_writes_empty_file() -> None:
 
     written: bytes = write_fh.write.call_args[0][0]
     assert written == b""
+
+
+# ---------------------------------------------------------------------------
+# deploy — tracks csp path fix
+# ---------------------------------------------------------------------------
+
+
+def test_deploy_tracks_uses_csp_subdir() -> None:
+    mock_ssh = _make_mock_ssh()
+    mock_ssh.exec_command.side_effect = _exec_for_deploy(True)
+
+    with patch("ac_updater.ssh_client.paramiko.SSHClient", return_value=mock_ssh):
+        client = SshClient("h", "u")
+        client.connect()
+    client.deploy("ac-drift", {"tracks": ["monza_2023"]})
+
+    cp_cmds = [
+        c[0][0] for c in mock_ssh.exec_command.call_args_list if "cp -r" in c[0][0]
+    ]
+    assert len(cp_cmds) == 1
+    assert "content/tracks/csp" in cp_cmds[0]
+
+
+def test_deploy_cars_uses_cars_subdir_not_csp() -> None:
+    mock_ssh = _make_mock_ssh()
+    mock_ssh.exec_command.side_effect = _exec_for_deploy(True)
+
+    with patch("ac_updater.ssh_client.paramiko.SSHClient", return_value=mock_ssh):
+        client = SshClient("h", "u")
+        client.connect()
+    client.deploy("ac-drift", {"cars": ["ferrari_458"]})
+
+    cp_cmds = [
+        c[0][0] for c in mock_ssh.exec_command.call_args_list if "cp -r" in c[0][0]
+    ]
+    assert len(cp_cmds) == 1
+    assert "content/cars" in cp_cmds[0]
+    assert "content/cars/csp" not in cp_cmds[0]
+
+
+# ---------------------------------------------------------------------------
+# list_server_tracks
+# ---------------------------------------------------------------------------
+
+
+def test_list_server_tracks_returns_sorted_dirs() -> None:
+    mock_ssh = _make_mock_ssh()
+    sftp = mock_ssh.open_sftp.return_value
+    sftp.listdir.return_value = ["zandvoort", "monza", "brands_hatch"]
+    sftp.stat.return_value = _dir_stat()
+
+    with patch("ac_updater.ssh_client.paramiko.SSHClient", return_value=mock_ssh):
+        client = SshClient("h", "u")
+        client.connect()
+    tracks = client.list_server_tracks("/home/acserver/ac-drift")
+
+    assert tracks == ["brands_hatch", "monza", "zandvoort"]
+    sftp.listdir.assert_called_once_with("/home/acserver/ac-drift/content/tracks/csp")
+
+
+def test_list_server_tracks_excludes_files() -> None:
+    mock_ssh = _make_mock_ssh()
+    sftp = mock_ssh.open_sftp.return_value
+    sftp.listdir.return_value = ["monza", "readme.txt"]
+
+    def _stat(path: str) -> MagicMock:
+        return _file_stat() if path.endswith(".txt") else _dir_stat()
+
+    sftp.stat.side_effect = _stat
+
+    with patch("ac_updater.ssh_client.paramiko.SSHClient", return_value=mock_ssh):
+        client = SshClient("h", "u")
+        client.connect()
+    assert client.list_server_tracks("/home/acserver/ac-drift") == ["monza"]
+
+
+def test_list_server_tracks_returns_empty_on_oserror() -> None:
+    mock_ssh = _make_mock_ssh()
+    sftp = mock_ssh.open_sftp.return_value
+    sftp.listdir.side_effect = OSError("not found")
+
+    with patch("ac_updater.ssh_client.paramiko.SSHClient", return_value=mock_ssh):
+        client = SshClient("h", "u")
+        client.connect()
+    assert client.list_server_tracks("/home/acserver/ac-drift") == []
+
+
+# ---------------------------------------------------------------------------
+# delete_content
+# ---------------------------------------------------------------------------
+
+
+def test_delete_content_cars_runs_rm_rf() -> None:
+    mock_ssh = _make_mock_ssh()
+    mock_ssh.exec_command.return_value = (MagicMock(), _make_stdout("", 0), _make_stderr())
+
+    with patch("ac_updater.ssh_client.paramiko.SSHClient", return_value=mock_ssh):
+        client = SshClient("h", "u")
+        client.connect()
+    client.delete_content("/home/acserver/ac-drift", "cars", ["ferrari_458", "bmw_m3"])
+
+    cmds = [c[0][0] for c in mock_ssh.exec_command.call_args_list]
+    assert all("rm -rf" in cmd for cmd in cmds)
+    assert any("content/cars/ferrari_458" in cmd for cmd in cmds)
+    assert any("content/cars/bmw_m3" in cmd for cmd in cmds)
+
+
+def test_delete_content_tracks_uses_csp_path() -> None:
+    mock_ssh = _make_mock_ssh()
+    mock_ssh.exec_command.return_value = (MagicMock(), _make_stdout("", 0), _make_stderr())
+
+    with patch("ac_updater.ssh_client.paramiko.SSHClient", return_value=mock_ssh):
+        client = SshClient("h", "u")
+        client.connect()
+    client.delete_content("/home/acserver/ac-drift", "tracks", ["monza"])
+
+    cmd: str = mock_ssh.exec_command.call_args[0][0]
+    assert "content/tracks/csp/monza" in cmd
+
+
+def test_delete_content_raises_on_failure() -> None:
+    import pytest
+
+    mock_ssh = _make_mock_ssh()
+    mock_ssh.exec_command.return_value = (
+        MagicMock(), _make_stdout("", 1), _make_stderr("permission denied")
+    )
+
+    with patch("ac_updater.ssh_client.paramiko.SSHClient", return_value=mock_ssh):
+        client = SshClient("h", "u")
+        client.connect()
+    with pytest.raises(RuntimeError):
+        client.delete_content("/home/acserver/ac-drift", "cars", ["ferrari"])
+
+
+# ---------------------------------------------------------------------------
+# fix_permissions
+# ---------------------------------------------------------------------------
+
+
+def test_fix_permissions_runs_chown_and_chmod() -> None:
+    mock_ssh = _make_mock_ssh()
+    mock_ssh.exec_command.return_value = (MagicMock(), _make_stdout("", 0), _make_stderr())
+
+    with patch("ac_updater.ssh_client.paramiko.SSHClient", return_value=mock_ssh):
+        client = SshClient("h", "u")
+        client.connect()
+    client.fix_permissions("/home/acserver/ac-drift", "cars", ["ferrari_458"])
+
+    cmd: str = mock_ssh.exec_command.call_args[0][0]
+    assert "sudo chown -R" in cmd
+    assert "sudo chmod -R 775" in cmd
+    assert "content/cars/ferrari_458" in cmd
+
+
+def test_fix_permissions_tracks_uses_csp_path() -> None:
+    mock_ssh = _make_mock_ssh()
+    mock_ssh.exec_command.return_value = (MagicMock(), _make_stdout("", 0), _make_stderr())
+
+    with patch("ac_updater.ssh_client.paramiko.SSHClient", return_value=mock_ssh):
+        client = SshClient("h", "u")
+        client.connect()
+    client.fix_permissions("/home/acserver/ac-drift", "tracks", ["monza"])
+
+    cmd: str = mock_ssh.exec_command.call_args[0][0]
+    assert "content/tracks/csp/monza" in cmd
+
+
+def test_fix_permissions_multiple_items_calls_once_each() -> None:
+    mock_ssh = _make_mock_ssh()
+    mock_ssh.exec_command.return_value = (MagicMock(), _make_stdout("", 0), _make_stderr())
+
+    with patch("ac_updater.ssh_client.paramiko.SSHClient", return_value=mock_ssh):
+        client = SshClient("h", "u")
+        client.connect()
+    client.fix_permissions("/home/acserver/ac-drift", "cars", ["car_a", "car_b"])
+
+    assert mock_ssh.exec_command.call_count == 2
+
+
+# ---------------------------------------------------------------------------
+# read_active_track
+# ---------------------------------------------------------------------------
+
+
+def test_read_active_track_returns_name_from_csp_format() -> None:
+    mock_ssh = _make_mock_ssh()
+    sftp = mock_ssh.open_sftp.return_value
+    ini = b"NAME=drift\nTRACK=csp/2144/../E/../monza_2023\nPORT=9600\n"
+    sftp.open.return_value = _sftp_file(ini)
+
+    with patch("ac_updater.ssh_client.paramiko.SSHClient", return_value=mock_ssh):
+        client = SshClient("h", "u")
+        client.connect()
+    assert client.read_active_track("/home/acserver/ac-drift") == "monza_2023"
+
+
+def test_read_active_track_returns_empty_when_no_track_line() -> None:
+    mock_ssh = _make_mock_ssh()
+    sftp = mock_ssh.open_sftp.return_value
+    ini = b"NAME=drift\nPORT=9600\n"
+    sftp.open.return_value = _sftp_file(ini)
+
+    with patch("ac_updater.ssh_client.paramiko.SSHClient", return_value=mock_ssh):
+        client = SshClient("h", "u")
+        client.connect()
+    assert client.read_active_track("/home/acserver/ac-drift") == ""
+
+
+def test_read_active_track_returns_empty_on_oserror() -> None:
+    mock_ssh = _make_mock_ssh()
+    sftp = mock_ssh.open_sftp.return_value
+    sftp.open.side_effect = OSError("not found")
+
+    with patch("ac_updater.ssh_client.paramiko.SSHClient", return_value=mock_ssh):
+        client = SshClient("h", "u")
+        client.connect()
+    assert client.read_active_track("/home/acserver/ac-drift") == ""
+
+
+# ---------------------------------------------------------------------------
+# write_active_track
+# ---------------------------------------------------------------------------
+
+
+def test_write_active_track_preserves_csp_prefix() -> None:
+    mock_ssh = _make_mock_ssh()
+    sftp = mock_ssh.open_sftp.return_value
+    ini = b"NAME=drift\nTRACK=csp/2144/../E/../monza_2023\nPORT=9600\n"
+    read_fh = _sftp_file(ini)
+    write_fh = _sftp_file()
+
+    call_count = [0]
+
+    def _open(path: str, mode: str) -> MagicMock:
+        call_count[0] += 1
+        return read_fh if mode == "r" else write_fh
+
+    sftp.open.side_effect = _open
+
+    with patch("ac_updater.ssh_client.paramiko.SSHClient", return_value=mock_ssh):
+        client = SshClient("h", "u")
+        client.connect()
+    client.write_active_track("/home/acserver/ac-drift", "brands_hatch")
+
+    written: str = write_fh.write.call_args[0][0].decode("utf-8")
+    assert "TRACK=csp/2144/../E/../brands_hatch" in written
+    assert "monza_2023" not in written
+
+
+def test_write_active_track_appends_when_no_existing_track_line() -> None:
+    mock_ssh = _make_mock_ssh()
+    sftp = mock_ssh.open_sftp.return_value
+    ini = b"NAME=drift\nPORT=9600\n"
+    read_fh = _sftp_file(ini)
+    write_fh = _sftp_file()
+
+    def _open(path: str, mode: str) -> MagicMock:
+        return read_fh if mode == "r" else write_fh
+
+    sftp.open.side_effect = _open
+
+    with patch("ac_updater.ssh_client.paramiko.SSHClient", return_value=mock_ssh):
+        client = SshClient("h", "u")
+        client.connect()
+    client.write_active_track("/home/acserver/ac-drift", "monza")
+
+    written: str = write_fh.write.call_args[0][0].decode("utf-8")
+    assert "TRACK=csp/2144/../E/../monza" in written
+    assert "NAME=drift" in written
+
+
+def test_write_active_track_uses_write_mode() -> None:
+    mock_ssh = _make_mock_ssh()
+    sftp = mock_ssh.open_sftp.return_value
+    ini = b"TRACK=csp/2144/../E/../old_track\n"
+    write_fh = _sftp_file()
+    modes: list[str] = []
+
+    def _open(path: str, mode: str) -> MagicMock:
+        modes.append(mode)
+        return _sftp_file(ini) if mode == "r" else write_fh
+
+    sftp.open.side_effect = _open
+
+    with patch("ac_updater.ssh_client.paramiko.SSHClient", return_value=mock_ssh):
+        client = SshClient("h", "u")
+        client.connect()
+    client.write_active_track("/home/acserver/ac-drift", "new_track")
+
+    assert "w" in modes

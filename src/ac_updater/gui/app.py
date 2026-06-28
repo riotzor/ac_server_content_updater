@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 import logging
 import os
 import subprocess
@@ -51,25 +52,27 @@ class _ChecklistPanel(ttk.LabelFrame):
         )
         ttk.Button(btn_row, text="Deselect All", command=self._deselect_all).pack(side="left")
 
-        canvas = tk.Canvas(self, borderwidth=0, highlightthickness=0)
-        scrollbar = ttk.Scrollbar(self, orient="vertical", command=canvas.yview)
-        inner = ttk.Frame(canvas)
+        self._canvas = tk.Canvas(self, borderwidth=0, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(self, orient="vertical", command=self._canvas.yview)
+        self._inner = ttk.Frame(self._canvas)
 
-        canvas.configure(yscrollcommand=scrollbar.set)
+        self._canvas.configure(yscrollcommand=scrollbar.set)
         scrollbar.pack(side="right", fill="y")
-        canvas.pack(side="left", fill="both", expand=True)
-        win_id = canvas.create_window((0, 0), window=inner, anchor="nw")
+        self._canvas.pack(side="left", fill="both", expand=True)
+        win_id = self._canvas.create_window((0, 0), window=self._inner, anchor="nw")
 
-        inner.bind(
+        self._inner.bind(
             "<Configure>",
-            lambda _e: canvas.configure(scrollregion=canvas.bbox("all")),
+            lambda _e: self._canvas.configure(scrollregion=self._canvas.bbox("all")),
         )
-        canvas.bind("<Configure>", lambda e: canvas.itemconfig(win_id, width=e.width))
+        self._canvas.bind(
+            "<Configure>", lambda e: self._canvas.itemconfig(win_id, width=e.width)
+        )
 
         for item in items:
             var = tk.BooleanVar(value=True)
             self._vars[item] = var
-            ttk.Checkbutton(inner, text=item, variable=var).pack(anchor="w", pady=1)
+            ttk.Checkbutton(self._inner, text=item, variable=var).pack(anchor="w", pady=1)
 
     def _select_all(self) -> None:
         for var in self._vars.values():
@@ -78,6 +81,17 @@ class _ChecklistPanel(ttk.LabelFrame):
     def _deselect_all(self) -> None:
         for var in self._vars.values():
             var.set(False)
+
+    def set_items(self, items: list[str], default_checked: bool = False) -> None:
+        """Replace the item list, clearing all previous entries."""
+        for widget in self._inner.winfo_children():
+            widget.destroy()
+        self._vars.clear()
+        for item in items:
+            var = tk.BooleanVar(value=default_checked)
+            self._vars[item] = var
+            ttk.Checkbutton(self._inner, text=item, variable=var).pack(anchor="w", pady=1)
+        self._canvas.configure(scrollregion=self._canvas.bbox("all"))
 
     def get_selected(self) -> list[str]:
         return [name for name, var in self._vars.items() if var.get()]
@@ -96,6 +110,7 @@ class _App(tk.Tk):
         self._ssh_client: SshClient | None = None
         self._ssh_server_map: dict[str, str] = {}
         self._ssh_panels: dict[str, _ChecklistPanel] = {}
+        self._current_server_name: str = ""
 
         log.info("App window created: install_dir=%s  share=%s", install_dir, self._share_path)
 
@@ -254,7 +269,7 @@ class _App(tk.Tk):
 
         ttk.Separator(ssh_frame, orient="horizontal").pack(fill="x", pady=(0, 6))
 
-        # Deploy row — pack before content_frame so it anchors to the bottom
+        # Server selector + deploy row — pack before content so it anchors to the bottom
         deploy_row = ttk.Frame(ssh_frame)
         deploy_row.pack(fill="x", side="bottom", pady=(6, 0))
 
@@ -267,22 +282,86 @@ class _App(tk.Tk):
             width=32,
         )
         self._ssh_server_combo.pack(side="left", padx=(6, 12))
+        self._ssh_server_combo.bind("<<ComboboxSelected>>", self._on_server_selected)
         self._ssh_deploy_btn = ttk.Button(
             deploy_row, text="Deploy to Server", command=self._on_ssh_deploy
         )
         self._ssh_deploy_btn.pack(side="left")
         self._ssh_deploy_btn.state(["disabled"])
 
-        # Content area — fills remaining space between connection row and deploy row
-        self._ssh_content_frame = ttk.Frame(ssh_frame)
-        self._ssh_content_frame.pack(fill="both", expand=True)
+        # Two-column content area: share (left) | server management (right)
+        columns = ttk.Frame(ssh_frame)
+        columns.pack(fill="both", expand=True)
+        columns.grid_rowconfigure(0, weight=1)
+        columns.grid_columnconfigure(0, weight=1)
+        columns.grid_columnconfigure(1, weight=1)
 
+        # Left: content available on the share
+        share_col = ttk.LabelFrame(columns, text="From Share", padding=4)
+        share_col.grid(row=0, column=0, sticky="nsew", padx=(0, 4))
+        self._ssh_content_frame = share_col
         self._ssh_placeholder = ttk.Label(
-            self._ssh_content_frame,
-            text="Connect to browse content on the share",
-            foreground=_GRAY,
+            share_col, text="Connect to browse content on the share", foreground=_GRAY
         )
         self._ssh_placeholder.pack(expand=True)
+
+        # Right: content on the selected server
+        server_col = ttk.LabelFrame(columns, text="On Server", padding=4)
+        server_col.grid(row=0, column=1, sticky="nsew")
+        server_col.grid_rowconfigure(1, weight=1)
+        server_col.grid_rowconfigure(3, weight=1)
+        server_col.grid_columnconfigure(0, weight=1)
+
+        self._server_mgmt_placeholder = ttk.Label(
+            server_col, text="Select a server to manage content.", foreground=_GRAY
+        )
+        self._server_mgmt_placeholder.grid(row=0, column=0, rowspan=5, pady=20)
+
+        # Cars management (hidden until a server is selected)
+        cars_lf = ttk.LabelFrame(server_col, text="Cars", padding=4)
+        cars_lf.grid_rowconfigure(0, weight=1)
+        cars_lf.grid_columnconfigure(0, weight=1)
+        self._server_cars_panel = _ChecklistPanel(cars_lf, "", [])
+        self._server_cars_panel.grid(row=0, column=0, sticky="nsew")
+        car_btns = ttk.Frame(cars_lf)
+        car_btns.grid(row=1, column=0, sticky="ew", pady=(4, 0))
+        ttk.Button(
+            car_btns, text="Fix Permissions",
+            command=lambda: self._on_fix_permissions("cars"),
+        ).pack(side="left")
+        ttk.Button(
+            car_btns, text="Delete",
+            command=lambda: self._on_delete_content("cars"),
+        ).pack(side="left", padx=(4, 0))
+        self._server_cars_lf = cars_lf
+
+        # Tracks management (hidden until a server is selected)
+        tracks_lf = ttk.LabelFrame(server_col, text="Tracks", padding=4)
+        tracks_lf.grid_rowconfigure(1, weight=1)
+        tracks_lf.grid_columnconfigure(0, weight=1)
+        active_row = ttk.Frame(tracks_lf)
+        active_row.grid(row=0, column=0, sticky="ew", pady=(0, 4))
+        ttk.Label(active_row, text="Active:").pack(side="left")
+        self._active_track_var = tk.StringVar(value="—")
+        ttk.Label(active_row, textvariable=self._active_track_var, foreground=_GREEN).pack(
+            side="left", padx=(4, 8)
+        )
+        ttk.Button(
+            active_row, text="Change…", command=self._on_change_active_track
+        ).pack(side="left")
+        self._server_tracks_panel = _ChecklistPanel(tracks_lf, "", [])
+        self._server_tracks_panel.grid(row=1, column=0, sticky="nsew")
+        track_btns = ttk.Frame(tracks_lf)
+        track_btns.grid(row=2, column=0, sticky="ew", pady=(4, 0))
+        ttk.Button(
+            track_btns, text="Fix Permissions",
+            command=lambda: self._on_fix_permissions("tracks"),
+        ).pack(side="left")
+        ttk.Button(
+            track_btns, text="Delete",
+            command=lambda: self._on_delete_content("tracks"),
+        ).pack(side="left", padx=(4, 0))
+        self._server_tracks_lf = tracks_lf
 
     def _build_nextcloud_tab(self, parent: ttk.Frame) -> None:
         conn_frame = ttk.LabelFrame(parent, text="Connection", padding=10)
@@ -865,6 +944,7 @@ class _App(tk.Tk):
         if display_list:
             self._ssh_server_combo.set(display_list[0])
             self._ssh_deploy_btn.state(["!disabled"])
+            self._on_server_selected()
         else:
             self._ssh_server_combo.set("")
             self._ssh_deploy_btn.state(["disabled"])
@@ -894,10 +974,12 @@ class _App(tk.Tk):
             panel.destroy()
         self._ssh_panels.clear()
         self._ssh_server_map.clear()
+        self._current_server_name = ""
         self._ssh_server_combo["values"] = []
         self._ssh_server_combo.set("")
         self._ssh_placeholder.configure(text="Connect to browse content on the share")
         self._ssh_placeholder.pack(expand=True)
+        self._clear_server_mgmt_panel()
         self._set_status("SSH disconnected", _GRAY)
 
     def _on_ssh_refresh(self) -> None:
@@ -915,6 +997,222 @@ class _App(tk.Tk):
             except Exception as exc:
                 err = str(exc)
                 self.after(0, lambda: self._on_ssh_connect_failed(err))
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    # ------------------------------------------------------------------
+    # Server content management
+    # ------------------------------------------------------------------
+
+    def _clear_server_mgmt_panel(self) -> None:
+        self._server_cars_lf.grid_remove()
+        self._server_tracks_lf.grid_remove()
+        self._server_mgmt_placeholder.grid(row=0, column=0, rowspan=5, pady=20)
+        self._active_track_var.set("—")
+
+    def _on_server_selected(self, event: object = None) -> None:
+        display = self._ssh_server_var.get()
+        server_name = self._ssh_server_map.get(display, "")
+        if not server_name or self._ssh_client is None:
+            return
+        self._current_server_name = server_name
+        client = self._ssh_client
+        server_dir = f"{_AC_HOME}/{server_name}"
+
+        def _worker() -> None:
+            try:
+                cars = client.list_server_cars(server_dir)
+                tracks = client.list_server_tracks(server_dir)
+                active = client.read_active_track(server_dir)
+                self.after(
+                    0, lambda: self._on_server_mgmt_loaded(server_name, cars, tracks, active)
+                )
+            except Exception as exc:
+                log.error("Failed to load server content for %s: %s", server_name, exc)
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _on_server_mgmt_loaded(
+        self,
+        server_name: str,
+        cars: list[str],
+        tracks: list[str],
+        active_track: str,
+    ) -> None:
+        if server_name != self._current_server_name:
+            return
+        self._server_mgmt_placeholder.grid_remove()
+
+        self._server_cars_panel.set_items(cars)
+        self._server_cars_lf.grid(row=0, column=0, sticky="nsew", padx=(0, 0), pady=(0, 4))
+
+        self._active_track_var.set(active_track or "—")
+        self._server_tracks_panel.set_items(tracks)
+        self._server_tracks_lf.grid(row=1, column=0, sticky="nsew")
+
+        log.info(
+            "Server management panel loaded: %s — %d cars, %d tracks",
+            server_name, len(cars), len(tracks),
+        )
+
+    def _on_fix_permissions(self, category: str) -> None:
+        if self._ssh_client is None or not self._current_server_name:
+            return
+        panel = self._server_cars_panel if category == "cars" else self._server_tracks_panel
+        selected = panel.get_selected()
+        if not selected:
+            messagebox.showwarning("Nothing selected", f"Select {category} to fix.", parent=self)
+            return
+        client = self._ssh_client
+        server_dir = f"{_AC_HOME}/{self._current_server_name}"
+        self._start_progress(f"Fixing permissions on {len(selected)} {category}…")
+
+        def _worker() -> None:
+            errors: list[str] = []
+            for name in selected:
+                try:
+                    client.fix_permissions(server_dir, category, [name])
+                except RuntimeError as exc:
+                    errors.append(f"{name}: {exc}")
+            self.after(0, self._stop_progress)
+            ts = datetime.now().strftime("%H:%M:%S")
+            if errors:
+                for e in errors:
+                    self.after(
+                        0,
+                        functools.partial(self._append_server_result, f"[{ts}]  {e}", "error"),
+                    )
+                self.after(0, lambda: self._set_status("Permission fix failed (see results)", _RED))
+            else:
+                n = len(selected)
+                self.after(0, lambda: self._append_server_result(
+                    f"[{ts}]  Fixed permissions on {n} {category}", "ok"
+                ))
+                self.after(0, lambda: self._set_status(
+                    f"Permissions fixed on {n} {category}", _GREEN
+                ))
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _on_delete_content(self, category: str) -> None:
+        if self._ssh_client is None or not self._current_server_name:
+            return
+        panel = self._server_cars_panel if category == "cars" else self._server_tracks_panel
+        selected = panel.get_selected()
+        if not selected:
+            messagebox.showwarning("Nothing selected", f"Select {category} to delete.", parent=self)
+            return
+        server_name = self._current_server_name
+        server_label = get_display_name(server_name)
+        service = f"{server_name}.service"
+        extra = (
+            "\n\nentry_list.ini will be rebuilt from remaining cars."
+            if category == "cars"
+            else ""
+        )
+        if not messagebox.askyesno(
+            "Confirm Delete",
+            f"Delete {len(selected)} {category} from {server_label}?\n"
+            f"This will stop {service}.{extra}",
+            parent=self,
+        ):
+            return
+
+        client = self._ssh_client
+        server_dir = f"{_AC_HOME}/{server_name}"
+        self._start_progress(f"Stopping {service}…")
+
+        def _worker() -> None:
+            error: str | None = None
+            try:
+                client.stop_service(service)
+                ts = datetime.now().strftime("%H:%M:%S")
+                self.after(0, lambda: self._append_server_result(
+                    f"[{ts}]  Stopped {service}", "ok"
+                ))
+            except RuntimeError as exc:
+                error = f"Failed to stop {service}: {exc}"
+
+            if error is None:
+                try:
+                    client.delete_content(server_dir, category, selected)
+                    ts = datetime.now().strftime("%H:%M:%S")
+                    n = len(selected)
+                    self.after(0, lambda: self._append_server_result(
+                        f"[{ts}]  Deleted {n} {category}", "ok"
+                    ))
+                except RuntimeError as exc:
+                    error = f"Delete failed: {exc}"
+
+            if error is None and category == "cars":
+                try:
+                    remaining = client.list_server_cars(server_dir)
+                    cars_with_skins = [
+                        (car, _get_skin_for_car(self._install_dir, car))
+                        for car in remaining
+                    ]
+                    client.write_entry_list(server_dir, cars_with_skins)
+                    ts = datetime.now().strftime("%H:%M:%S")
+                    n = len(remaining)
+                    self.after(0, lambda: self._append_server_result(
+                        f"[{ts}]  entry_list.ini rebuilt ({n} car(s))", "ok"
+                    ))
+                except Exception as exc:
+                    error = f"Failed to rebuild entry_list.ini: {exc}"
+
+            self.after(0, self._stop_progress)
+            if error:
+                self.after(0, lambda: self._append_server_result(f"    {error}", "error"))
+                self.after(0, lambda: self._set_status(error, _RED))
+            else:
+                self.after(0, lambda: self._set_status(
+                    f"Deleted {len(selected)} {category} from {server_label}", _GREEN
+                ))
+            self.after(0, lambda: self._on_server_selected())
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _on_change_active_track(self) -> None:
+        if self._ssh_client is None or not self._current_server_name:
+            return
+        client = self._ssh_client
+        server_dir = f"{_AC_HOME}/{self._current_server_name}"
+        available = list(self._server_tracks_panel._vars.keys())
+        if not available:
+            messagebox.showinfo("No tracks", "No tracks found on the server.", parent=self)
+            return
+        track = simpledialog.askstring(
+            "Set Active Track",
+            "Available tracks:\n  " + "\n  ".join(available) + "\n\nEnter track name:",
+            initialvalue=self._active_track_var.get()
+            if self._active_track_var.get() != "—"
+            else "",
+            parent=self,
+        )
+        if not track or track.strip() not in available:
+            if track is not None:
+                messagebox.showwarning(
+                    "Invalid track",
+                    f"'{track}' is not in the server's tracks list.",
+                    parent=self,
+                )
+            return
+        track = track.strip()
+
+        def _worker() -> None:
+            try:
+                client.write_active_track(server_dir, track)
+                self.after(0, lambda: self._active_track_var.set(track))
+                ts = datetime.now().strftime("%H:%M:%S")
+                self.after(0, lambda: self._append_server_result(
+                    f"[{ts}]  Active track set to {track} (restart server to apply)", "ok"
+                ))
+                self.after(0, lambda: self._set_status(
+                    f"Active track: {track} — restart server to apply", _ORANGE
+                ))
+            except Exception as exc:
+                err = str(exc)
+                self.after(0, lambda: self._set_status(err, _RED))
 
         threading.Thread(target=_worker, daemon=True).start()
 
@@ -1069,6 +1367,7 @@ class _App(tk.Tk):
             )
         elif stopped:
             self._set_status(f"{service} stopped (entry_list.ini not updated)", _ORANGE)
+        self._on_server_selected()
 
 
 # ------------------------------------------------------------------
