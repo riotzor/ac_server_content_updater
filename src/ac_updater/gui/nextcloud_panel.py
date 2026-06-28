@@ -204,7 +204,7 @@ class _FileBrowserDialog(tk.Toplevel):
             self._dest_var = tk.StringVar(value="Destination: /")
             ttk.Label(dest_row, textvariable=self._dest_var, foreground="gray").pack(side="left")
 
-            name_row = ttk.Frame(self, padding=(8, 4, 8, 6))
+            name_row = ttk.Frame(self, padding=(8, 4, 8, 4))
             name_row.pack(fill="x")
             ttk.Label(name_row, text="Filename:").pack(side="left")
             self._upload_name_var = tk.StringVar(value=self._archive_name)
@@ -219,6 +219,19 @@ class _FileBrowserDialog(tk.Toplevel):
             )
             self._upload_btn.pack(side="right")
 
+            # Upload progress (hidden until upload starts)
+            prog_frame = ttk.Frame(self, padding=(8, 0, 8, 6))
+            self._upload_prog_frame = prog_frame
+            self._upload_prog_bar = ttk.Progressbar(
+                prog_frame, mode="determinate", maximum=100
+            )
+            self._upload_prog_bar.pack(side="left", fill="x", expand=True, padx=(0, 8))
+            self._upload_prog_var = tk.StringVar()
+            ttk.Label(prog_frame, textvariable=self._upload_prog_var, width=20, anchor="e").pack(
+                side="left"
+            )
+            # prog_frame is not packed — shown only when upload is running
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
@@ -226,6 +239,20 @@ class _FileBrowserDialog(tk.Toplevel):
     def _set_status(self, text: str, color: str = "gray") -> None:
         self._status_var.set(text)
         self._status_lbl.configure(foreground=color)
+
+    def _show_upload_progress(self, sent: int, total: int) -> None:
+        pct = int(sent / total * 100) if total else 100
+        self._upload_prog_bar.configure(value=pct)
+        sent_mb = sent / 1_048_576
+        total_mb = total / 1_048_576
+        self._upload_prog_var.set(f"{sent_mb:.1f} / {total_mb:.1f} MB")
+        if not self._upload_prog_frame.winfo_ismapped():
+            self._upload_prog_frame.pack(fill="x")
+
+    def _hide_upload_progress(self) -> None:
+        self._upload_prog_frame.pack_forget()
+        self._upload_prog_bar.configure(value=0)
+        self._upload_prog_var.set("")
 
     def _selected(self) -> RemoteFile | None:
         sel = self._tree.selection()
@@ -383,16 +410,21 @@ class _FileBrowserDialog(tk.Toplevel):
         self._set_status(f"Uploading {archive_name}…", _ORANGE)
         self._upload_btn.state(["disabled"])
 
+        def on_progress(sent: int, total: int) -> None:
+            self.after(0, lambda: self._show_upload_progress(sent, total))
+
         def _do() -> None:
             try:
-                self._client.upload_file(archive_path, remote)
+                self._client.upload_file(archive_path, remote, on_progress=on_progress)
                 self.upload_successful = True
                 log.info("Upload succeeded: %s", remote)
+                self.after(0, self._hide_upload_progress)
                 self.after(0, lambda: self._set_status(f"Uploaded ✓  →  /{remote}", _GREEN))
                 self.after(0, self._refresh)
             except (NextcloudError, OSError) as exc:
                 err = str(exc)
                 log.error("Upload failed: %s", exc)
+                self.after(0, self._hide_upload_progress)
                 self.after(0, lambda: self._set_status(f"Upload failed: {err}", _RED))
                 self.after(0, lambda: self._upload_btn.state(["!disabled"]))
 

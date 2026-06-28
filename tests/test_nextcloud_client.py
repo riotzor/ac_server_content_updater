@@ -224,6 +224,29 @@ def test_upload_file_chunked_raises_on_assembly_failure(tmp_path: Path) -> None:
                     _client().upload_file(archive, "test.7z")
 
 
+def test_upload_file_chunked_calls_on_progress_per_chunk(tmp_path: Path) -> None:
+    archive = tmp_path / "big.7z"
+    archive.write_bytes(b"x" * 6)  # 6 bytes; chunk size patched to 2 → 3 chunks
+
+    progress_calls: list[tuple[int, int]] = []
+
+    def _dispatch(method: str, url: str, **_: object) -> MagicMock:
+        if method in ("MKCOL", "MOVE"):
+            return _mock_response(201)
+        return _mock_response(201)
+
+    with patch("ac_updater.nextcloud_client._CHUNK_SIZE", 2):
+        with patch("ac_updater.nextcloud_client.requests.request", side_effect=_dispatch):
+            with patch(
+                "ac_updater.nextcloud_client.requests.put", return_value=_mock_response(201)
+            ):
+                _client().upload_file(
+                    archive, "test.7z", on_progress=lambda s, t: progress_calls.append((s, t))
+                )
+
+    assert progress_calls == [(2, 6), (4, 6), (6, 6)]
+
+
 def test_upload_file_small_does_not_use_chunked_path(tmp_path: Path) -> None:
     archive = tmp_path / "small.7z"
     archive.write_bytes(b"x")  # 1 byte, chunk size default 10 MB
