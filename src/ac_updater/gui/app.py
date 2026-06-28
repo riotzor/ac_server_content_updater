@@ -1339,6 +1339,10 @@ class _App(tk.Tk):
     def _on_copy_done(self, result: CopyResult, share_path: Path) -> None:
         ts = datetime.now().strftime("%H:%M:%S")
         summary = f"[{ts}]  Copied {result.copied} file(s) to {share_path}"
+        log.info(
+            "Share copy done: copied=%d  skipped=%d  errors=%d  share=%s",
+            result.copied, result.skipped, len(result.errors), share_path,
+        )
 
         if result.errors:
             self._append_server_result(
