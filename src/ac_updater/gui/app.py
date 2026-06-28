@@ -157,7 +157,7 @@ class _App(tk.Tk):
             self._panels[category] = panel
 
     def _build_server_tab(self, parent: ttk.Frame) -> None:
-        ssh_host, ssh_user = load_ssh_config()
+        ssh_host, ssh_user, ssh_key = load_ssh_config()
 
         # ── Share copy section ──────────────────────────────────────────────
         share_row = ttk.Frame(parent)
@@ -236,6 +236,21 @@ class _App(tk.Tk):
         ttk.Button(conn_row, text="Refresh", command=self._on_ssh_refresh).pack(
             side="right"
         )
+
+        # Key file row
+        key_row = ttk.Frame(ssh_frame)
+        key_row.pack(fill="x", pady=(0, 6))
+        ttk.Label(key_row, text="Key file:").pack(side="left")
+        self._ssh_key_var = tk.StringVar(value=ssh_key)
+        ttk.Entry(key_row, textvariable=self._ssh_key_var, width=45).pack(
+            side="left", padx=(4, 4)
+        )
+        ttk.Button(key_row, text="Browse…", command=self._on_ssh_browse_key).pack(side="left")
+        ttk.Label(
+            key_row,
+            text="(leave blank for default ~/.ssh/ keys)",
+            foreground=_GRAY,
+        ).pack(side="left", padx=(8, 0))
 
         ttk.Separator(ssh_frame, orient="horizontal").pack(fill="x", pady=(0, 6))
 
@@ -701,27 +716,85 @@ class _App(tk.Tk):
         if not host or not user:
             messagebox.showwarning("Missing fields", "Enter host and username first.", parent=self)
             return
-        save_ssh_config(host, user)
+        key_path = self._ssh_key_var.get().strip() or None
+        save_ssh_config(host, user, key_path or "")
         self._ssh_connect_btn.state(["disabled"])
         self._update_ssh_status("Connecting…", _ORANGE)
         self._set_status(f"Connecting to {user}@{host}…", _ORANGE)
-        log.info("SSH connect initiated: user=%s  host=%s", user, host)
+        log.info(
+            "SSH connect initiated: user=%s  host=%s  key=%s", user, host, key_path or "(default)"
+        )
 
         def _try_key() -> None:
             try:
                 client = SshClient(host, user)
-                client.connect()
+                client.connect(key_path=key_path)
                 self._ssh_client = client
                 content = client.list_share_content()
                 servers = client.list_ac_servers()
                 self.after(0, lambda: self._on_ssh_connected(content, servers))
+            except paramiko.PasswordRequiredException:
+                if key_path:
+                    self.after(0, lambda: self._on_ssh_need_passphrase(host, user, key_path))
+                else:
+                    err = (
+                        "A key in ~/.ssh/ is passphrase-protected. "
+                        "Specify the key file above or unlock it with ssh-agent."
+                    )
+                    self.after(0, lambda: self._on_ssh_connect_failed(err))
             except paramiko.AuthenticationException:
-                self.after(0, self._on_ssh_need_password)
+                if key_path:
+                    err = (
+                        f"Key file was rejected by {host}. "
+                        "Check that the public key is in authorized_keys."
+                    )
+                    self.after(0, lambda: self._on_ssh_connect_failed(err))
+                else:
+                    self.after(0, self._on_ssh_need_password)
             except Exception as exc:
                 err = str(exc)
                 self.after(0, lambda: self._on_ssh_connect_failed(err))
 
         threading.Thread(target=_try_key, daemon=True).start()
+
+    def _on_ssh_browse_key(self) -> None:
+        initial = str(Path.home() / ".ssh")
+        path = filedialog.askopenfilename(
+            title="Select SSH private key file",
+            initialdir=initial if Path(initial).exists() else str(Path.home()),
+            filetypes=[("All files", "*.*")],
+            parent=self,
+        )
+        if path:
+            self._ssh_key_var.set(path)
+
+    def _on_ssh_need_passphrase(self, host: str, user: str, key_path: str) -> None:
+        log.info("Key file is passphrase-protected, prompting: %s", key_path)
+        passphrase = simpledialog.askstring(
+            "Key Passphrase",
+            f"Passphrase for {Path(key_path).name}:",
+            show="●",
+            parent=self,
+        )
+        if passphrase is None:
+            self._ssh_connect_btn.state(["!disabled"])
+            self._update_ssh_status("Not connected", _RED)
+            self._set_status("SSH connection cancelled", _GRAY)
+            return
+
+        def _try_passphrase() -> None:
+            try:
+                client = SshClient(host, user)
+                client.connect(key_path=key_path, passphrase=passphrase)
+                self._ssh_client = client
+                content = client.list_share_content()
+                servers = client.list_ac_servers()
+                self.after(0, lambda: self._on_ssh_connected(content, servers))
+            except Exception as exc:
+                err = str(exc)
+                self.after(0, lambda: self._on_ssh_connect_failed(err))
+
+        threading.Thread(target=_try_passphrase, daemon=True).start()
 
     def _on_ssh_need_password(self) -> None:
         host = self._ssh_host_var.get()

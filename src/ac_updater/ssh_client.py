@@ -42,15 +42,26 @@ class SshClient:
     def is_connected(self) -> bool:
         return self._ssh is not None
 
-    def connect(self, password: str | None = None) -> None:
+    def connect(
+        self,
+        password: str | None = None,
+        key_path: str | None = None,
+        passphrase: str | None = None,
+    ) -> None:
         """Connect to the remote host.
 
-        With no password, tries SSH agent and ~/.ssh key files.
-        With a password, uses only password auth (no key lookup).
+        key_path: explicit path to a private key file; disables ~/.ssh/ fallback.
+        passphrase: decryption passphrase for key_path (ignored when password is set).
+        password: use password auth only (disables key lookup).
+        No args: tries SSH agent and all ~/.ssh/id_* key files.
         Raises paramiko.AuthenticationException on auth failure.
+        Raises paramiko.PasswordRequiredException if the key file needs a passphrase.
         Raises socket.timeout / OSError on network failure.
         """
-        log.info("SSH connect: user=%s  host=%s", self._username, self._host)
+        log.info(
+            "SSH connect: user=%s  host=%s  key=%s",
+            self._username, self._host, key_path or "(default)",
+        )
         ssh = paramiko.SSHClient()
         ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
         kwargs: dict[str, object] = {
@@ -61,6 +72,11 @@ class SshClient:
             kwargs["password"] = password
             kwargs["allow_agent"] = False
             kwargs["look_for_keys"] = False
+        elif key_path:
+            kwargs["key_filename"] = key_path
+            kwargs["look_for_keys"] = False
+            if passphrase is not None:
+                kwargs["passphrase"] = passphrase
         ssh.connect(self._host, **kwargs)
         self._ssh = ssh
         self._sftp = ssh.open_sftp()
