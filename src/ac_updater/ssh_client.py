@@ -205,6 +205,18 @@ class SshClient:
         self._exec(f"sudo systemctl stop {shlex.quote(service_name)}")
         log.info("Service stopped: %s", service_name)
 
+    def start_service(self, service_name: str) -> None:
+        """Start a systemd service on the remote host via sudo."""
+        log.info("Starting service: %s", service_name)
+        self._exec(f"sudo systemctl start {shlex.quote(service_name)}")
+        log.info("Service started: %s", service_name)
+
+    def restart_service(self, service_name: str) -> None:
+        """Restart a systemd service on the remote host via sudo."""
+        log.info("Restarting service: %s", service_name)
+        self._exec(f"sudo systemctl restart {shlex.quote(service_name)}")
+        log.info("Service restarted: %s", service_name)
+
     def list_server_cars(self, server_dir: str) -> list[str]:
         """Return sorted car directory names from <server_dir>/content/cars/."""
         assert self._sftp is not None, "Not connected"
