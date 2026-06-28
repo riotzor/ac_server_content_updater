@@ -1,7 +1,7 @@
 from pathlib import Path
 from unittest.mock import MagicMock
 
-from ac_updater.content_copier import copy_to_share
+from ac_updater.content_copier import copy_to_share, detect_track_layouts
 
 
 def _make_ac_tree(root: Path) -> Path:
@@ -21,7 +21,36 @@ def _make_ac_tree(root: Path) -> Path:
     # spa has modes.ini but no surfaces.ini
     (content / "tracks" / "spa" / "modes.ini").write_text("modes", encoding="utf-8")
 
+    # ks_vallunga — multi-layout track
+    vallunga = content / "tracks" / "ks_vallunga"
+    for layout in ("classic_circuit", "club_circuit", "extended_circuit"):
+        (vallunga / f"models_{layout}").mkdir(parents=True)
+        (vallunga / layout / "data").mkdir(parents=True)
+        (vallunga / f"models_{layout}.ini").write_text(f"model={layout}", encoding="utf-8")
+        (vallunga / layout / "data" / "surfaces.ini").write_text("surfaces", encoding="utf-8")
+
     return root
+
+
+# ---------------------------------------------------------------------------
+# detect_track_layouts
+# ---------------------------------------------------------------------------
+
+
+def test_detect_layouts_returns_sorted_layout_names(tmp_path: Path) -> None:
+    ac = _make_ac_tree(tmp_path / "ac")
+    layouts = detect_track_layouts(ac, "ks_vallunga")
+    assert layouts == ["classic_circuit", "club_circuit", "extended_circuit"]
+
+
+def test_detect_layouts_returns_empty_for_single_layout_track(tmp_path: Path) -> None:
+    ac = _make_ac_tree(tmp_path / "ac")
+    assert detect_track_layouts(ac, "monza") == []
+
+
+def test_detect_layouts_returns_empty_for_missing_track(tmp_path: Path) -> None:
+    ac = _make_ac_tree(tmp_path / "ac")
+    assert detect_track_layouts(ac, "nonexistent") == []
 
 
 # ---------------------------------------------------------------------------
@@ -159,3 +188,85 @@ def test_injectable_copy_fn_called_with_correct_paths(tmp_path: Path) -> None:
     expected_src = ac / "content" / "cars" / "ferrari_458" / "data.acd"
     expected_dst = share / "content" / "cars" / "ferrari_458" / "data.acd"
     mock_copy.assert_called_once_with(expected_src, expected_dst)
+
+
+# ---------------------------------------------------------------------------
+# Multi-layout tracks
+# ---------------------------------------------------------------------------
+
+
+def test_copy_multi_layout_track_copies_model_ini(tmp_path: Path) -> None:
+    ac = _make_ac_tree(tmp_path / "ac")
+    share = tmp_path / "share"
+
+    copy_to_share(
+        ac,
+        {"tracks": ["ks_vallunga"]},
+        share,
+        track_layouts={"ks_vallunga": "classic_circuit"},
+    )
+
+    expected = share / "content" / "tracks" / "ks_vallunga" / "models_classic_circuit.ini"
+    assert expected.exists()
+
+
+def test_copy_multi_layout_track_copies_layout_surfaces_ini(tmp_path: Path) -> None:
+    ac = _make_ac_tree(tmp_path / "ac")
+    share = tmp_path / "share"
+
+    copy_to_share(
+        ac,
+        {"tracks": ["ks_vallunga"]},
+        share,
+        track_layouts={"ks_vallunga": "club_circuit"},
+    )
+
+    expected = (
+        share / "content" / "tracks" / "ks_vallunga" / "club_circuit" / "data" / "surfaces.ini"
+    )
+    assert expected.exists()
+
+
+def test_copy_multi_layout_track_does_not_copy_modes_ini(tmp_path: Path) -> None:
+    ac = _make_ac_tree(tmp_path / "ac")
+    share = tmp_path / "share"
+
+    copy_to_share(
+        ac,
+        {"tracks": ["ks_vallunga"]},
+        share,
+        track_layouts={"ks_vallunga": "classic_circuit"},
+    )
+
+    assert not (share / "content" / "tracks" / "ks_vallunga" / "modes.ini").exists()
+
+
+def test_copy_multi_layout_track_copies_exactly_two_files(tmp_path: Path) -> None:
+    ac = _make_ac_tree(tmp_path / "ac")
+    share = tmp_path / "share"
+
+    result = copy_to_share(
+        ac,
+        {"tracks": ["ks_vallunga"]},
+        share,
+        track_layouts={"ks_vallunga": "classic_circuit"},
+    )
+
+    assert result.copied == 2
+    assert result.skipped == 0
+
+
+def test_track_without_layout_in_map_uses_single_layout_files(tmp_path: Path) -> None:
+    """A track absent from track_layouts still uses modes.ini / surfaces.ini."""
+    ac = _make_ac_tree(tmp_path / "ac")
+    share = tmp_path / "share"
+
+    copy_to_share(
+        ac,
+        {"tracks": ["monza"]},
+        share,
+        track_layouts={},  # monza not in map
+    )
+
+    assert (share / "content" / "tracks" / "monza" / "modes.ini").exists()
+    assert (share / "content" / "tracks" / "monza" / "data" / "surfaces.ini").exists()

@@ -19,24 +19,50 @@ class CopyResult:
     errors: list[str] = field(default_factory=list)
 
 
+def detect_track_layouts(install_dir: Path, track_name: str) -> list[str]:
+    """Return sorted layout names for a multi-layout track.
+
+    A multi-layout track has subdirectories named ``models_<layout>`` inside
+    its track folder.  Returns an empty list for single-layout tracks or if
+    the track directory cannot be read.
+    """
+    track_dir = install_dir / "content" / "tracks" / track_name
+    layouts: list[str] = []
+    try:
+        for entry in track_dir.iterdir():
+            if entry.is_dir() and entry.name.startswith("models_"):
+                layouts.append(entry.name[len("models_"):])
+    except OSError:
+        pass
+    return sorted(layouts)
+
+
 def copy_to_share(
     install_dir: Path,
     selection: dict[str, list[str]],
     share_path: Path,
     *,
+    track_layouts: dict[str, str] | None = None,
     _copy2: Callable[[Path, Path], object] = shutil.copy2,
 ) -> CopyResult:
     """Copy selected AC content files to a network share.
 
     Copies only the server-relevant files:
-      cars   — <car>/data.acd
-      tracks — <track>/modes.ini  and  <track>/data/surfaces.ini
+      cars                  — <car>/data.acd
+      tracks (single-layout)— <track>/modes.ini  and  <track>/data/surfaces.ini
+      tracks (multi-layout) — <track>/models_<layout>.ini
+                              and <track>/<layout>/data/surfaces.ini
+
+    track_layouts maps track names to the chosen layout name for tracks that
+    have multiple layouts.  Tracks absent from track_layouts use the
+    single-layout file set.
 
     Files not present in the AC install are counted as skipped (not errors).
     OS-level copy failures are recorded in CopyResult.errors.
     """
     result = CopyResult()
     content_dir = install_dir / "content"
+    layouts = track_layouts or {}
     total_items = sum(len(v) for v in selection.values())
     log.info(
         "Starting server content copy: share=%s  items=%d", share_path, total_items
@@ -52,7 +78,15 @@ def copy_to_share(
             )
 
     for track in selection.get("tracks", []):
-        for rel in _TRACK_FILES:
+        layout = layouts.get(track)
+        if layout is not None:
+            rel_files: tuple[str, ...] = (
+                f"models_{layout}.ini",
+                f"{layout}/data/surfaces.ini",
+            )
+        else:
+            rel_files = _TRACK_FILES
+        for rel in rel_files:
             _copy_file(
                 src=content_dir / "tracks" / track / rel,
                 dst=share_path / "content" / "tracks" / track / rel,

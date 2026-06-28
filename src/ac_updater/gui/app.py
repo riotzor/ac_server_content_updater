@@ -16,7 +16,7 @@ import paramiko
 from ac_updater._logging import setup_logging
 from ac_updater.ac_finder import find_ac_install
 from ac_updater.archiver import create_archive
-from ac_updater.content_copier import CopyResult, copy_to_share
+from ac_updater.content_copier import CopyResult, copy_to_share, detect_track_layouts
 from ac_updater.content_scanner import scan_content
 from ac_updater.gui.nextcloud_panel import open_connect_dialog, open_file_browser
 from ac_updater.install_config import load_install_dir, save_install_dir
@@ -96,6 +96,60 @@ class _ChecklistPanel(ttk.LabelFrame):
 
     def get_selected(self) -> list[str]:
         return [name for name, var in self._vars.items() if var.get()]
+
+
+class _LayoutPickerDialog(tk.Toplevel):
+    """Modal dialog for choosing one layout per multi-layout track."""
+
+    def __init__(
+        self,
+        parent: tk.Widget,
+        track_layouts: dict[str, list[str]],
+    ) -> None:
+        super().__init__(parent)
+        self.title("Select Track Layouts")
+        self.resizable(False, False)
+        self.grab_set()
+        self._result: dict[str, str] | None = None
+        self._vars: dict[str, tk.StringVar] = {}
+
+        msg = (
+            "The following tracks have multiple layouts.\n"
+            "Select one layout to copy for each track:"
+        )
+        ttk.Label(self, text=msg, justify="left").pack(padx=12, pady=(12, 8))
+
+        for track, layouts in track_layouts.items():
+            lf = ttk.LabelFrame(self, text=track, padding=6)
+            lf.pack(fill="x", padx=12, pady=4)
+            var = tk.StringVar(value=layouts[0])
+            self._vars[track] = var
+            ttk.Combobox(
+                lf,
+                textvariable=var,
+                values=layouts,
+                state="readonly",
+                width=44,
+            ).pack(fill="x")
+
+        btn_row = ttk.Frame(self)
+        btn_row.pack(fill="x", padx=12, pady=12)
+        ttk.Button(btn_row, text="Cancel", command=self._cancel).pack(side="right", padx=(4, 0))
+        ttk.Button(btn_row, text="OK", command=self._ok).pack(side="right")
+
+        self.protocol("WM_DELETE_WINDOW", self._cancel)
+        self.wait_window()
+
+    def _ok(self) -> None:
+        self._result = {track: var.get() for track, var in self._vars.items()}
+        self.destroy()
+
+    def _cancel(self) -> None:
+        self.destroy()
+
+    @property
+    def result(self) -> dict[str, str] | None:
+        return self._result
 
 
 class _App(tk.Tk):
@@ -796,14 +850,32 @@ class _App(tk.Tk):
         if selection is None:
             return
 
+        # Check each selected track for multiple layouts
+        multi_layout: dict[str, list[str]] = {}
+        for track in selection.get("tracks", []):
+            layouts = detect_track_layouts(self._install_dir, track)
+            if layouts:
+                multi_layout[track] = layouts
+
+        chosen_layouts: dict[str, str] = {}
+        if multi_layout:
+            dlg = _LayoutPickerDialog(self, multi_layout)
+            if dlg.result is None:
+                return  # user cancelled
+            chosen_layouts = dlg.result
+
         install_dir = self._install_dir
         share_path = self._share_path
-        log.info("Server Content Update initiated: share=%s", share_path)
+        log.info(
+            "Server Content Update initiated: share=%s  layouts=%s", share_path, chosen_layouts
+        )
         self._start_progress(f"Copying to {share_path}…")
         self._disable_buttons()
 
         def _worker() -> None:
-            result = copy_to_share(install_dir, selection, share_path)
+            result = copy_to_share(
+                install_dir, selection, share_path, track_layouts=chosen_layouts
+            )
             self.after(0, self._stop_progress)
             self.after(0, lambda: self._on_copy_done(result, share_path))
             self.after(0, self._enable_buttons)
