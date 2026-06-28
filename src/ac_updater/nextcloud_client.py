@@ -51,6 +51,10 @@ class NextcloudClient:
         self._auth = HTTPBasicAuth(username, password)
         log.debug("NextcloudClient initialised for user '%s' at %s", username, base)
 
+    @property
+    def username(self) -> str:
+        return self._username
+
     def _url(self, remote_path: str = "") -> str:
         return self._dav_base + remote_path.lstrip("/")
 

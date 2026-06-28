@@ -6,6 +6,7 @@ import subprocess
 import tempfile
 import threading
 import tkinter as tk
+from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
@@ -23,11 +24,12 @@ log = logging.getLogger(__name__)
 
 _SELECTION_FILE = Path("selections") / "selection.txt"
 _WINDOW_TITLE = "AC Server Content Updater"
-_WINDOW_SIZE = "1060x640"
+_WINDOW_SIZE = "1060x680"
 
 _GREEN = "#27ae60"
 _RED = "#c0392b"
 _ORANGE = "#e67e00"
+_GRAY = "gray"
 
 
 class _ChecklistPanel(ttk.LabelFrame):
@@ -90,70 +92,183 @@ class _App(tk.Tk):
         log.info("App window created: install_dir=%s  share=%s", install_dir, self._share_path)
 
         self._build_header()
-        self._panel_area = ttk.Frame(self, padding=(10, 0, 10, 0))
-        self._panel_area.pack(fill="both", expand=True)
-        self._build_panels(content)
+        self._build_notebook(content)
         self._build_footer()
 
     # ------------------------------------------------------------------
-    # Layout builders
+    # Layout — header (always visible)
     # ------------------------------------------------------------------
 
     def _build_header(self) -> None:
-        header = ttk.Frame(self, padding=(10, 8))
+        header = ttk.Frame(self, padding=(10, 8, 10, 4))
         header.pack(fill="x")
 
         ttk.Label(header, text="AC Install:", font=("", 9, "bold")).pack(side="left")
         self._install_path_label = ttk.Label(header, text=str(self._install_dir))
         self._install_path_label.pack(side="left", padx=(6, 4))
-        ttk.Button(header, text="Change...", command=self._on_change_dir).pack(
-            side="left", padx=(0, 16)
-        )
+        ttk.Button(header, text="Change...", command=self._on_change_dir).pack(side="left")
 
-        ttk.Separator(header, orient="vertical").pack(side="left", fill="y", padx=(0, 16))
+        ttk.Separator(self, orient="horizontal").pack(fill="x", padx=10)
 
-        ttk.Label(header, text="Share:", font=("", 9, "bold")).pack(side="left")
-        self._share_path_label = ttk.Label(header, text=str(self._share_path))
-        self._share_path_label.pack(side="left", padx=(6, 4))
-        ttk.Button(header, text="Change...", command=self._on_change_share).pack(side="left")
+    # ------------------------------------------------------------------
+    # Layout — notebook with four tabs
+    # ------------------------------------------------------------------
+
+    def _build_notebook(self, content: dict[str, list[str]]) -> None:
+        self._nb = ttk.Notebook(self)
+        self._nb.pack(fill="both", expand=True, padx=8, pady=(6, 0))
+
+        tab1 = ttk.Frame(self._nb, padding=6)
+        tab2 = ttk.Frame(self._nb, padding=12)
+        tab3 = ttk.Frame(self._nb, padding=12)
+        tab4 = ttk.Frame(self._nb, padding=12)
+
+        self._nb.add(tab1, text="  Content Browser  ")
+        self._nb.add(tab2, text="  Server Update  ")
+        self._nb.add(tab3, text="  Nextcloud  ")
+        self._nb.add(tab4, text="  Archive  ")
+
+        self._build_content_tab(tab1, content)
+        self._build_server_tab(tab2)
+        self._build_nextcloud_tab(tab3)
+        self._build_archive_tab(tab4)
+
+    def _build_content_tab(self, parent: ttk.Frame, content: dict[str, list[str]]) -> None:
+        self._panel_area = ttk.Frame(parent)
+        self._panel_area.pack(fill="both", expand=True)
+        self._build_panels(content)
+
+        btn_row = ttk.Frame(parent)
+        btn_row.pack(fill="x", pady=(8, 0))
+        ttk.Button(btn_row, text="Save Selection", command=self._on_save).pack(side="right")
 
     def _build_panels(self, content: dict[str, list[str]]) -> None:
         for category, items in content.items():
             panel = _ChecklistPanel(self._panel_area, title=category.title(), items=items)
-            panel.pack(side="left", fill="both", expand=True, padx=(0, 6))
+            panel.pack(side="left", fill="both", expand=True, padx=(0, 4))
             self._panels[category] = panel
 
+    def _build_server_tab(self, parent: ttk.Frame) -> None:
+        share_row = ttk.Frame(parent)
+        share_row.pack(fill="x", pady=(0, 12))
+        ttk.Label(share_row, text="Network Share:", font=("", 9, "bold")).pack(side="left")
+        self._share_path_label = ttk.Label(share_row, text=str(self._share_path))
+        self._share_path_label.pack(side="left", padx=(6, 4))
+        ttk.Button(share_row, text="Change...", command=self._on_change_share).pack(side="left")
+
+        self._server_btn = ttk.Button(
+            parent, text="Server Content Update", command=self._on_server_update
+        )
+        self._server_btn.pack(anchor="w", pady=(0, 14))
+
+        ttk.Separator(parent, orient="horizontal").pack(fill="x", pady=(0, 8))
+
+        lbl_row = ttk.Frame(parent)
+        lbl_row.pack(fill="x", pady=(0, 4))
+        ttk.Label(lbl_row, text="Results", font=("", 9, "bold")).pack(side="left")
+        ttk.Button(lbl_row, text="Clear", command=self._clear_server_results).pack(side="right")
+
+        result_frame = ttk.Frame(parent, relief="sunken", borderwidth=1)
+        result_frame.pack(fill="both", expand=True)
+        self._server_result = tk.Text(
+            result_frame,
+            height=8,
+            state="disabled",
+            wrap="word",
+            font=("Consolas", 9),
+        )
+        sb = ttk.Scrollbar(result_frame, command=self._server_result.yview)
+        self._server_result.configure(yscrollcommand=sb.set)
+        self._server_result.tag_configure("error", foreground=_RED)
+        self._server_result.tag_configure("warn", foreground=_ORANGE)
+        self._server_result.tag_configure("ok", foreground=_GREEN)
+        sb.pack(side="right", fill="y")
+        self._server_result.pack(fill="both", expand=True)
+
+    def _build_nextcloud_tab(self, parent: ttk.Frame) -> None:
+        conn_frame = ttk.LabelFrame(parent, text="Connection", padding=10)
+        conn_frame.pack(fill="x", pady=(0, 14))
+
+        status_row = ttk.Frame(conn_frame)
+        status_row.pack(fill="x")
+        ttk.Label(status_row, text="Status:").pack(side="left")
+        self._nc_status_var = tk.StringVar(value="Not connected")
+        self._nc_status_label = ttk.Label(
+            status_row, textvariable=self._nc_status_var, foreground=_RED
+        )
+        self._nc_status_label.pack(side="left", padx=(6, 16))
+        self._nc_connect_btn = ttk.Button(
+            status_row, text="Connect...", command=self._on_nc_connect
+        )
+        self._nc_connect_btn.pack(side="left", padx=(0, 6))
+        self._nc_disconnect_btn = ttk.Button(
+            status_row, text="Disconnect", command=self._on_nc_disconnect
+        )
+        self._nc_disconnect_btn.pack(side="left")
+        self._nc_disconnect_btn.state(["disabled"])
+
+        ttk.Separator(parent, orient="horizontal").pack(fill="x", pady=(0, 12))
+
+        ttk.Label(
+            parent,
+            text="Create an archive from the current Content Browser selection"
+            " and upload it to Nextcloud.",
+            wraplength=500,
+            foreground=_GRAY,
+        ).pack(anchor="w", pady=(0, 8))
+        self._upload_btn = ttk.Button(
+            parent,
+            text="Create & Upload to Nextcloud",
+            command=self._on_create_upload,
+        )
+        self._upload_btn.pack(anchor="w")
+
+    def _build_archive_tab(self, parent: ttk.Frame) -> None:
+        ttk.Label(
+            parent,
+            text="Create a .7z archive from the current Content Browser selection"
+            " and save it locally.",
+            wraplength=500,
+            foreground=_GRAY,
+        ).pack(anchor="w", pady=(0, 10))
+
+        self._archive_btn = ttk.Button(
+            parent, text="Create Archive...", command=self._on_create_archive
+        )
+        self._archive_btn.pack(anchor="w")
+
+        ttk.Separator(parent, orient="horizontal").pack(fill="x", pady=(16, 12))
+
+        last_row = ttk.Frame(parent)
+        last_row.pack(fill="x")
+        ttk.Label(last_row, text="Last archive:", font=("", 9, "bold")).pack(side="left")
+        self._last_archive_var = tk.StringVar(value="—")
+        ttk.Label(last_row, textvariable=self._last_archive_var, foreground=_GRAY).pack(
+            side="left", padx=(6, 0)
+        )
+
+    # ------------------------------------------------------------------
+    # Layout — footer (shared status bar)
+    # ------------------------------------------------------------------
+
     def _build_footer(self) -> None:
-        footer = ttk.Frame(self, padding=(10, 6))
+        ttk.Separator(self, orient="horizontal").pack(fill="x", pady=(4, 0))
+        footer = ttk.Frame(self, padding=(10, 5))
         footer.pack(fill="x", side="bottom")
 
         self._status_var = tk.StringVar()
-        self._status_label = ttk.Label(footer, textvariable=self._status_var, foreground="gray")
+        self._status_label = ttk.Label(
+            footer, textvariable=self._status_var, foreground=_GRAY
+        )
         self._status_label.pack(side="left")
 
         self._progress = ttk.Progressbar(footer, mode="indeterminate", length=160)
-
-        ttk.Button(footer, text="Save Selection", command=self._on_save).pack(
-            side="right", padx=(6, 0)
-        )
-        self._archive_btn = ttk.Button(
-            footer, text="Create Archive", command=self._on_create_archive
-        )
-        self._archive_btn.pack(side="right", padx=(6, 0))
-        self._upload_btn = ttk.Button(
-            footer, text="Create & Upload to Nextcloud", command=self._on_create_upload
-        )
-        self._upload_btn.pack(side="right", padx=(6, 0))
-        self._server_btn = ttk.Button(
-            footer, text="Server Content Update", command=self._on_server_update
-        )
-        self._server_btn.pack(side="right")
 
     # ------------------------------------------------------------------
     # Status / progress helpers
     # ------------------------------------------------------------------
 
-    def _set_status(self, text: str, color: str = "gray") -> None:
+    def _set_status(self, text: str, color: str = _GRAY) -> None:
         self._status_var.set(text)
         self._status_label.configure(foreground=color)
 
@@ -169,10 +284,58 @@ class _App(tk.Tk):
     def _disable_buttons(self) -> None:
         for btn in (self._archive_btn, self._upload_btn, self._server_btn):
             btn.state(["disabled"])
+        self._nc_connect_btn.state(["disabled"])
+        self._nc_disconnect_btn.state(["disabled"])
 
     def _enable_buttons(self) -> None:
         for btn in (self._archive_btn, self._upload_btn, self._server_btn):
             btn.state(["!disabled"])
+        self._update_nc_status()
+
+    # ------------------------------------------------------------------
+    # Nextcloud connection state
+    # ------------------------------------------------------------------
+
+    def _update_nc_status(self) -> None:
+        if self._nc_client is not None:
+            self._nc_status_var.set(f"Connected as  {self._nc_client.username}")
+            self._nc_status_label.configure(foreground=_GREEN)
+            self._nc_connect_btn.state(["disabled"])
+            self._nc_disconnect_btn.state(["!disabled"])
+        else:
+            self._nc_status_var.set("Not connected")
+            self._nc_status_label.configure(foreground=_RED)
+            self._nc_connect_btn.state(["!disabled"])
+            self._nc_disconnect_btn.state(["disabled"])
+
+    def _on_nc_connect(self) -> None:
+        log.info("User opened Nextcloud connection dialog")
+        client = open_connect_dialog(self)
+        if client is not None:
+            self._nc_client = client
+            log.info("Nextcloud connected as '%s'", client.username)
+        self._update_nc_status()
+
+    def _on_nc_disconnect(self) -> None:
+        if self._nc_client is not None:
+            log.info("User disconnected from Nextcloud (was '%s')", self._nc_client.username)
+        self._nc_client = None
+        self._update_nc_status()
+
+    # ------------------------------------------------------------------
+    # Server results log helpers
+    # ------------------------------------------------------------------
+
+    def _append_server_result(self, text: str, tag: str = "") -> None:
+        self._server_result.configure(state="normal")
+        self._server_result.insert("end", text + "\n", tag if tag else ())
+        self._server_result.see("end")
+        self._server_result.configure(state="disabled")
+
+    def _clear_server_results(self) -> None:
+        self._server_result.configure(state="normal")
+        self._server_result.delete("1.0", "end")
+        self._server_result.configure(state="disabled")
 
     # ------------------------------------------------------------------
     # Actions — header
@@ -211,7 +374,7 @@ class _App(tk.Tk):
         self._set_status(f"Share path updated → {self._share_path}", _GREEN)
 
     # ------------------------------------------------------------------
-    # Actions — footer
+    # Actions — Content Browser tab
     # ------------------------------------------------------------------
 
     def _on_save(self) -> None:
@@ -229,10 +392,15 @@ class _App(tk.Tk):
         selection = {cat: panel.get_selected() for cat, panel in self._panels.items()}
         if not any(selection.values()):
             messagebox.showwarning(
-                "Nothing selected", "Tick at least one item before proceeding."
+                "Nothing selected",
+                "Tick at least one item on the Content Browser tab before proceeding.",
             )
             return None
         return selection
+
+    # ------------------------------------------------------------------
+    # Actions — Archive tab
+    # ------------------------------------------------------------------
 
     def _on_create_archive(self) -> None:
         selection = self._get_selection()
@@ -256,13 +424,18 @@ class _App(tk.Tk):
             try:
                 create_archive(install_dir, selection, output_path)
                 self.after(0, self._stop_progress)
-                self.after(0, lambda: self._set_status(f"Archive saved → {output_path}", _GREEN))
+                self.after(0, lambda: self._last_archive_var.set(str(output_path)))
+                self.after(
+                    0, lambda: self._set_status(f"Archive saved → {output_path}", _GREEN)
+                )
             except FileNotFoundError as exc:
                 err = str(exc)
                 log.error("Create Archive failed — 7-Zip not found: %s", exc)
                 self.after(0, self._stop_progress)
                 self.after(0, lambda: messagebox.showerror("7-Zip not found", err))
-                self.after(0, lambda: self._set_status("Archive failed — 7-Zip not found", _RED))
+                self.after(
+                    0, lambda: self._set_status("Archive failed — 7-Zip not found", _RED)
+                )
             except subprocess.CalledProcessError as exc:
                 msg = f"7-Zip exited with code {exc.returncode}"
                 log.error("Create Archive failed: %s", msg)
@@ -274,14 +447,19 @@ class _App(tk.Tk):
 
         threading.Thread(target=_worker, daemon=True).start()
 
+    # ------------------------------------------------------------------
+    # Actions — Nextcloud tab
+    # ------------------------------------------------------------------
+
     def _on_create_upload(self) -> None:
         selection = self._get_selection()
         if selection is None:
             return
 
         if self._nc_client is None:
-            log.info("No Nextcloud client — opening connection dialog")
+            log.info("No Nextcloud client — opening connection dialog from upload flow")
             self._nc_client = open_connect_dialog(self)
+            self._update_nc_status()
         if self._nc_client is None:
             log.info("Nextcloud connect dialog cancelled")
             return
@@ -290,7 +468,7 @@ class _App(tk.Tk):
         nc_client = self._nc_client
         default_name = _default_archive_name(selection)
 
-        # mkstemp atomically creates a unique file; unlink so 7-zip creates the archive fresh
+        # mkstemp atomically reserves a unique path; unlink so 7-zip creates fresh
         _fd, _tmp = tempfile.mkstemp(suffix=".7z")
         os.close(_fd)
         os.unlink(_tmp)
@@ -311,7 +489,9 @@ class _App(tk.Tk):
                 log.error("Create & Upload — archive failed (7-Zip not found): %s", exc)
                 self.after(0, self._stop_progress)
                 self.after(0, lambda: messagebox.showerror("7-Zip not found", err))
-                self.after(0, lambda: self._set_status("Archive failed — 7-Zip not found", _RED))
+                self.after(
+                    0, lambda: self._set_status("Archive failed — 7-Zip not found", _RED)
+                )
                 self.after(0, self._enable_buttons)
             except subprocess.CalledProcessError as exc:
                 msg = f"7-Zip exited with code {exc.returncode}"
@@ -337,13 +517,17 @@ class _App(tk.Tk):
             self._set_status("Upload complete", _GREEN)
         else:
             log.info("Upload cancelled by user")
-            self._set_status("Upload cancelled", "gray")
+            self._set_status("Upload cancelled", _GRAY)
         try:
             tmp_path.unlink(missing_ok=True)
             log.debug("Temp archive cleaned up: %s", tmp_path)
         except OSError as exc:
             log.warning("Could not clean up temp archive %s: %s", tmp_path, exc)
         self._enable_buttons()
+
+    # ------------------------------------------------------------------
+    # Actions — Server Update tab
+    # ------------------------------------------------------------------
 
     def _on_server_update(self) -> None:
         selection = self._get_selection()
@@ -365,19 +549,28 @@ class _App(tk.Tk):
         threading.Thread(target=_worker, daemon=True).start()
 
     def _on_copy_done(self, result: CopyResult, share_path: Path) -> None:
-        base = f"Copied {result.copied} file(s)"
+        ts = datetime.now().strftime("%H:%M:%S")
+        summary = f"[{ts}]  Copied {result.copied} file(s) to {share_path}"
+
         if result.errors:
-            detail = "\n".join(result.errors[:15])
-            if len(result.errors) > 15:
-                detail += f"\n…and {len(result.errors) - 15} more"
-            messagebox.showerror("Copy errors", detail)
-            self._set_status(f"{base}, {len(result.errors)} error(s)", _RED)
-        elif result.skipped:
+            self._append_server_result(
+                f"{summary}  —  {len(result.errors)} error(s)", "error"
+            )
+            for err in result.errors:
+                self._append_server_result(f"    {err}", "error")
             self._set_status(
-                f"{base} to {share_path} ({result.skipped} not found in AC install)", _ORANGE
+                f"Copied {result.copied} file(s), {len(result.errors)} error(s)", _RED
+            )
+        elif result.skipped:
+            self._append_server_result(
+                f"{summary}  —  {result.skipped} not found", "warn"
+            )
+            self._set_status(
+                f"Copied {result.copied} file(s) ({result.skipped} not found)", _ORANGE
             )
         else:
-            self._set_status(f"{base} to {share_path}", _GREEN)
+            self._append_server_result(summary, "ok")
+            self._set_status(f"Copied {result.copied} file(s) to {share_path}", _GREEN)
 
 
 # ------------------------------------------------------------------
