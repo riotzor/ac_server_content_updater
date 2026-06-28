@@ -935,3 +935,76 @@ def test_write_active_track_uses_write_mode() -> None:
     client.write_active_track("/home/acserver/ac-drift", "new_track")
 
     assert "w" in modes
+
+
+# ---------------------------------------------------------------------------
+# patch_surfaces_ini
+# ---------------------------------------------------------------------------
+
+
+def test_patch_surfaces_ini_replaces_surface_0() -> None:
+    mock_ssh = _make_mock_ssh()
+    sftp = mock_ssh.open_sftp.return_value
+    original = b"[SURFACE_0]\nKEY=VALUE\n"
+    written: list[bytes] = []
+    write_fh = _sftp_file()
+    write_fh.write.side_effect = written.append
+
+    def _open(path: str, mode: str) -> MagicMock:
+        return _sftp_file(original) if mode == "r" else write_fh
+
+    sftp.open.side_effect = _open
+
+    with patch("ac_updater.ssh_client.paramiko.SSHClient", return_value=mock_ssh):
+        client = SshClient("h", "u")
+        client.connect()
+    client.patch_surfaces_ini("/home/acserver/ac-drift", "ks_vallelunga")
+
+    assert written and b"[CSPFACE_0]" in written[0]
+    assert b"[SURFACE_0]" not in written[0]
+
+
+def test_patch_surfaces_ini_only_first_occurrence() -> None:
+    mock_ssh = _make_mock_ssh()
+    sftp = mock_ssh.open_sftp.return_value
+    original = b"[SURFACE_0]\n[SURFACE_0]\n"
+    written: list[bytes] = []
+    write_fh = _sftp_file()
+    write_fh.write.side_effect = written.append
+
+    sftp.open.side_effect = lambda path, mode: _sftp_file(original) if mode == "r" else write_fh
+
+    with patch("ac_updater.ssh_client.paramiko.SSHClient", return_value=mock_ssh):
+        client = SshClient("h", "u")
+        client.connect()
+    client.patch_surfaces_ini("/home/acserver/ac-drift", "ks_vallelunga")
+
+    assert written[0] == b"[CSPFACE_0]\n[SURFACE_0]\n"
+
+
+def test_patch_surfaces_ini_noop_when_already_patched() -> None:
+    mock_ssh = _make_mock_ssh()
+    sftp = mock_ssh.open_sftp.return_value
+    original = b"[CSPFACE_0]\nKEY=VALUE\n"
+
+    sftp.open.return_value = _sftp_file(original)
+
+    with patch("ac_updater.ssh_client.paramiko.SSHClient", return_value=mock_ssh):
+        client = SshClient("h", "u")
+        client.connect()
+    client.patch_surfaces_ini("/home/acserver/ac-drift", "ks_vallelunga")
+
+    # open should only have been called once (read), not twice (read+write)
+    assert sftp.open.call_count == 1
+
+
+def test_patch_surfaces_ini_noop_when_file_missing() -> None:
+    mock_ssh = _make_mock_ssh()
+    sftp = mock_ssh.open_sftp.return_value
+    sftp.open.side_effect = OSError("no such file")
+
+    with patch("ac_updater.ssh_client.paramiko.SSHClient", return_value=mock_ssh):
+        client = SshClient("h", "u")
+        client.connect()
+    # Should not raise
+    client.patch_surfaces_ini("/home/acserver/ac-drift", "missing_track")

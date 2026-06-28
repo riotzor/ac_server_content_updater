@@ -27,7 +27,9 @@ def _make_ac_tree(root: Path) -> Path:
     for layout in ("classic_circuit", "club_circuit", "extended_circuit"):
         (vallunga / layout / "data").mkdir(parents=True)
         (vallunga / f"models_{layout}.ini").write_text(f"model={layout}", encoding="utf-8")
-        (vallunga / layout / "data" / "surfaces.ini").write_text("surfaces", encoding="utf-8")
+        (vallunga / layout / "data" / "surfaces.ini").write_text(
+            "[SURFACE_0]\nKEY=VALUE\n", encoding="utf-8"
+        )
 
     return root
 
@@ -270,3 +272,64 @@ def test_track_without_layout_in_map_uses_single_layout_files(tmp_path: Path) ->
 
     assert (share / "content" / "tracks" / "monza" / "models.ini").exists()
     assert (share / "content" / "tracks" / "monza" / "data" / "surfaces.ini").exists()
+
+
+# ---------------------------------------------------------------------------
+# surfaces.ini CSPFACE patch
+# ---------------------------------------------------------------------------
+
+
+def test_surfaces_ini_patched_on_single_layout_copy(tmp_path: Path) -> None:
+    ac = _make_ac_tree(tmp_path / "ac")
+    # Put [SURFACE_0] in surfaces.ini
+    surfaces = ac / "content" / "tracks" / "monza" / "data" / "surfaces.ini"
+    surfaces.write_text("[SURFACE_0]\nKEY=VALUE\n", encoding="utf-8")
+    share = tmp_path / "share"
+
+    copy_to_share(ac, {"tracks": ["monza"]}, share)
+
+    dst = share / "content" / "tracks" / "monza" / "data" / "surfaces.ini"
+    assert dst.read_text(encoding="utf-8").startswith("[CSPFACE_0]")
+
+
+def test_surfaces_ini_patched_on_multi_layout_copy(tmp_path: Path) -> None:
+    ac = _make_ac_tree(tmp_path / "ac")
+    share = tmp_path / "share"
+
+    copy_to_share(
+        ac,
+        {"tracks": ["ks_vallunga"]},
+        share,
+        track_layouts={"ks_vallunga": "classic_circuit"},
+    )
+
+    dst = (
+        share / "content" / "tracks" / "ks_vallunga" / "classic_circuit" / "data" / "surfaces.ini"
+    )
+    assert dst.read_text(encoding="utf-8").startswith("[CSPFACE_0]")
+
+
+def test_surfaces_ini_patch_is_first_occurrence_only(tmp_path: Path) -> None:
+    ac = _make_ac_tree(tmp_path / "ac")
+    surfaces = ac / "content" / "tracks" / "monza" / "data" / "surfaces.ini"
+    surfaces.write_text("[SURFACE_0]\n[SURFACE_0]\n", encoding="utf-8")
+    share = tmp_path / "share"
+
+    copy_to_share(ac, {"tracks": ["monza"]}, share)
+
+    content = (share / "content" / "tracks" / "monza" / "data" / "surfaces.ini").read_text(
+        encoding="utf-8"
+    )
+    assert content == "[CSPFACE_0]\n[SURFACE_0]\n"
+
+
+def test_surfaces_ini_already_patched_is_unchanged(tmp_path: Path) -> None:
+    ac = _make_ac_tree(tmp_path / "ac")
+    surfaces = ac / "content" / "tracks" / "monza" / "data" / "surfaces.ini"
+    surfaces.write_text("[CSPFACE_0]\nKEY=VALUE\n", encoding="utf-8")
+    share = tmp_path / "share"
+
+    copy_to_share(ac, {"tracks": ["monza"]}, share)
+
+    dst = share / "content" / "tracks" / "monza" / "data" / "surfaces.ini"
+    assert dst.read_text(encoding="utf-8").startswith("[CSPFACE_0]")

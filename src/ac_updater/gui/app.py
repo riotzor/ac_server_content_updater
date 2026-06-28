@@ -152,6 +152,52 @@ class _LayoutPickerDialog(tk.Toplevel):
         return self._result
 
 
+class _TrackPickerDialog(tk.Toplevel):
+    """Modal dropdown for selecting a single track from a list."""
+
+    def __init__(
+        self,
+        parent: tk.Misc,
+        tracks: list[str],
+        current: str = "",
+    ) -> None:
+        super().__init__(parent)
+        self.title("Set Active Track")
+        self.resizable(False, False)
+        self.grab_set()
+        self._result: str | None = None
+
+        ttk.Label(self, text="Select the active track:").pack(padx=12, pady=(12, 6))
+        var = tk.StringVar(value=current if current in tracks else tracks[0])
+        self._var = var
+        ttk.Combobox(
+            self,
+            textvariable=var,
+            values=tracks,
+            state="readonly",
+            width=44,
+        ).pack(padx=12, pady=(0, 8))
+
+        btn_row = ttk.Frame(self)
+        btn_row.pack(fill="x", padx=12, pady=12)
+        ttk.Button(btn_row, text="Cancel", command=self._cancel).pack(side="right", padx=(4, 0))
+        ttk.Button(btn_row, text="OK", command=self._ok).pack(side="right")
+
+        self.protocol("WM_DELETE_WINDOW", self._cancel)
+        self.wait_window()
+
+    def _ok(self) -> None:
+        self._result = self._var.get()
+        self.destroy()
+
+    def _cancel(self) -> None:
+        self.destroy()
+
+    @property
+    def result(self) -> str | None:
+        return self._result
+
+
 class _App(tk.Tk):
     def __init__(self, install_dir: Path, content: dict[str, list[str]]) -> None:
         super().__init__()
@@ -445,6 +491,10 @@ class _App(tk.Tk):
             track_btns, text="Fix Permissions",
             command=lambda: self._on_fix_permissions("tracks"),
         ).pack(side="left")
+        ttk.Button(
+            track_btns, text="Fix surfaces.ini",
+            command=self._on_fix_surfaces_ini,
+        ).pack(side="left", padx=(4, 0))
         ttk.Button(
             track_btns, text="Delete",
             command=lambda: self._on_delete_content("tracks"),
@@ -1280,6 +1330,72 @@ class _App(tk.Tk):
 
         threading.Thread(target=_worker, daemon=True).start()
 
+    def _on_fix_surfaces_ini(self) -> None:
+        if self._ssh_client is None or not self._current_server_name:
+            return
+        selected = self._server_tracks_panel.get_selected()
+        if not selected:
+            messagebox.showwarning("Nothing selected", "Select tracks to patch.", parent=self)
+            return
+        client = self._ssh_client
+        server_name = self._current_server_name
+        server_dir = f"{_AC_HOME}/{server_name}"
+        service = f"{server_name}.service"
+        active_track = self._active_track_var.get()
+        active_patched = active_track in selected and active_track != "—"
+
+        self._start_progress(f"Patching surfaces.ini on {len(selected)} track(s)…")
+
+        def _worker() -> None:
+            errors: list[str] = []
+            if active_patched:
+                try:
+                    client.stop_service(service)
+                    ts = datetime.now().strftime("%H:%M:%S")
+                    self.after(0, lambda: self._append_server_result(
+                        f"[{ts}]  Stopped {service}", "ok"
+                    ))
+                except RuntimeError as exc:
+                    errors.append(f"Stop service: {exc}")
+
+            for track in selected:
+                try:
+                    client.patch_surfaces_ini(server_dir, track)
+                    ts = datetime.now().strftime("%H:%M:%S")
+                    self.after(0, lambda: self._append_server_result(
+                        f"[{ts}]  Patched surfaces.ini for {track}", "ok"
+                    ))
+                except Exception as exc:
+                    errors.append(f"{track}: {exc}")
+
+            if active_patched and not errors:
+                try:
+                    client.restart_service(service)
+                    ts = datetime.now().strftime("%H:%M:%S")
+                    self.after(0, lambda: self._append_server_result(
+                        f"[{ts}]  Restarted {service}", "ok"
+                    ))
+                except RuntimeError as exc:
+                    errors.append(f"Restart service: {exc}")
+
+            self.after(0, self._stop_progress)
+            ts = datetime.now().strftime("%H:%M:%S")
+            if errors:
+                for e in errors:
+                    self.after(
+                        0,
+                        functools.partial(self._append_server_result, f"[{ts}]  {e}", "error"),
+                    )
+                msg = "surfaces.ini patch failed (see results)"
+                self.after(0, lambda: self._set_status(msg, _RED))
+            else:
+                n = len(selected)
+                self.after(0, lambda: self._set_status(
+                    f"surfaces.ini patched on {n} track(s)", _GREEN
+                ))
+
+        threading.Thread(target=_worker, daemon=True).start()
+
     def _on_delete_content(self, category: str) -> None:
         if self._ssh_client is None or not self._current_server_name:
             return
@@ -1411,23 +1527,11 @@ class _App(tk.Tk):
         if not available:
             messagebox.showinfo("No tracks", "No tracks found on the server.", parent=self)
             return
-        track = simpledialog.askstring(
-            "Set Active Track",
-            "Available tracks:\n  " + "\n  ".join(available) + "\n\nEnter track name:",
-            initialvalue=self._active_track_var.get()
-            if self._active_track_var.get() != "—"
-            else "",
-            parent=self,
-        )
-        if not track or track.strip() not in available:
-            if track is not None:
-                messagebox.showwarning(
-                    "Invalid track",
-                    f"'{track}' is not in the server's tracks list.",
-                    parent=self,
-                )
+        current = self._active_track_var.get()
+        dlg = _TrackPickerDialog(self, available, current if current != "—" else "")
+        if dlg.result is None:
             return
-        track = track.strip()
+        track = dlg.result
 
         service = f"{self._current_server_name}.service"
 
@@ -1495,6 +1599,12 @@ class _App(tk.Tk):
 
         def _worker() -> None:
             result = client.deploy(server_name, selection, on_progress=on_progress)
+            server_dir = f"{_AC_HOME}/{server_name}"
+            for track in (name for cat, name in result.deployed_items if cat == "tracks"):
+                try:
+                    client.patch_surfaces_ini(server_dir, track)
+                except Exception as exc:
+                    log.warning("Could not patch surfaces.ini for %s: %s", track, exc)
             self.after(0, self._stop_progress)
             self.after(0, lambda: self._on_deploy_done(result, label, server_name))
 

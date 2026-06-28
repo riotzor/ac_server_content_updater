@@ -348,6 +348,29 @@ class SshClient:
             )
             log.info("Fixed permissions on %s/%s", category, name)
 
+    def patch_surfaces_ini(self, server_dir: str, track_name: str) -> None:
+        """Replace [SURFACE_0] with [CSPFACE_0] on the first occurrence in surfaces.ini.
+
+        The file is read via SFTP, patched in Python, and written back — no
+        shell-side escaping required.  A no-op if the file is already patched
+        or does not exist.
+        """
+        assert self._sftp is not None, "Not connected"
+        path = f"{server_dir}/content/tracks/csp/{track_name}/data/surfaces.ini"
+        try:
+            with self._sftp.open(path, "r") as fh:
+                content: str = fh.read().decode("utf-8", errors="replace")
+        except OSError:
+            log.warning("surfaces.ini not found for track %s — skipping patch", track_name)
+            return
+        new_content = content.replace("[SURFACE_0]", "[CSPFACE_0]", 1)
+        if new_content == content:
+            log.debug("surfaces.ini already patched for track %s", track_name)
+            return
+        with self._sftp.open(path, "w") as fh:
+            fh.write(new_content.encode("utf-8"))
+        log.info("Patched surfaces.ini [SURFACE_0] → [CSPFACE_0] for track %s", track_name)
+
     def read_active_track(self, server_dir: str) -> str:
         """Return the track name currently set in server_cfg.ini, or empty string."""
         assert self._sftp is not None, "Not connected"

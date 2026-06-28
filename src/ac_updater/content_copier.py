@@ -118,6 +118,20 @@ def _copy_file(
         copy2(src, dst)
         log.debug("Copied: %s  →  %s", src, dst)
         result.copied += 1
+        if dst.name == "surfaces.ini":
+            _patch_surfaces_ini(dst)
     except OSError as exc:
         log.error("Failed to copy %s → %s: %s", src, dst, exc)
         result.errors.append(f"{src.name}: {exc}")
+
+
+def _patch_surfaces_ini(path: Path) -> None:
+    """Replace the first [SURFACE_0] with [CSPFACE_0] in a local surfaces.ini."""
+    try:
+        content = path.read_text(encoding="utf-8", errors="replace")
+        new_content = content.replace("[SURFACE_0]", "[CSPFACE_0]", 1)
+        if new_content != content:
+            path.write_text(new_content, encoding="utf-8")
+            log.debug("Patched surfaces.ini [SURFACE_0] → [CSPFACE_0]: %s", path)
+    except OSError as exc:
+        log.warning("Could not patch surfaces.ini %s: %s", path, exc)
