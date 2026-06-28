@@ -104,6 +104,30 @@ def test_connect_with_key_path_does_not_set_password() -> None:
     assert call_kwargs["look_for_keys"] is False
 
 
+def test_connect_with_key_path_and_passphrase_sets_passphrase_kwarg() -> None:
+    mock_ssh = _make_mock_ssh()
+    with patch("ac_updater.ssh_client.paramiko.SSHClient", return_value=mock_ssh):
+        client = SshClient("host", "user")
+        client.connect(key_path="/path/to/key", passphrase="s3cr3t")
+    mock_ssh.connect.assert_called_once_with(
+        "host",
+        username="user",
+        timeout=10,
+        key_filename="/path/to/key",
+        look_for_keys=False,
+        passphrase="s3cr3t",
+    )
+
+
+def test_connect_without_passphrase_does_not_set_passphrase_kwarg() -> None:
+    mock_ssh = _make_mock_ssh()
+    with patch("ac_updater.ssh_client.paramiko.SSHClient", return_value=mock_ssh):
+        client = SshClient("host", "user")
+        client.connect(key_path="/path/to/key")
+    call_kwargs = mock_ssh.connect.call_args[1]
+    assert "passphrase" not in call_kwargs
+
+
 def test_connect_opens_sftp() -> None:
     mock_ssh = _make_mock_ssh()
     with patch("ac_updater.ssh_client.paramiko.SSHClient", return_value=mock_ssh):

@@ -734,11 +734,14 @@ class _App(tk.Tk):
                 servers = client.list_ac_servers()
                 self.after(0, lambda: self._on_ssh_connected(content, servers))
             except paramiko.PasswordRequiredException:
-                err = (
-                    "The key file is passphrase-protected. "
-                    "Unlock it with ssh-agent, or use a passphrase-free key."
-                )
-                self.after(0, lambda: self._on_ssh_connect_failed(err))
+                if key_path:
+                    self.after(0, lambda: self._on_ssh_need_passphrase(host, user, key_path))
+                else:
+                    err = (
+                        "A key in ~/.ssh/ is passphrase-protected. "
+                        "Specify the key file above or unlock it with ssh-agent."
+                    )
+                    self.after(0, lambda: self._on_ssh_connect_failed(err))
             except paramiko.AuthenticationException:
                 if key_path:
                     err = (
@@ -764,6 +767,34 @@ class _App(tk.Tk):
         )
         if path:
             self._ssh_key_var.set(path)
+
+    def _on_ssh_need_passphrase(self, host: str, user: str, key_path: str) -> None:
+        log.info("Key file is passphrase-protected, prompting: %s", key_path)
+        passphrase = simpledialog.askstring(
+            "Key Passphrase",
+            f"Passphrase for {Path(key_path).name}:",
+            show="●",
+            parent=self,
+        )
+        if passphrase is None:
+            self._ssh_connect_btn.state(["!disabled"])
+            self._update_ssh_status("Not connected", _RED)
+            self._set_status("SSH connection cancelled", _GRAY)
+            return
+
+        def _try_passphrase() -> None:
+            try:
+                client = SshClient(host, user)
+                client.connect(key_path=key_path, passphrase=passphrase)
+                self._ssh_client = client
+                content = client.list_share_content()
+                servers = client.list_ac_servers()
+                self.after(0, lambda: self._on_ssh_connected(content, servers))
+            except Exception as exc:
+                err = str(exc)
+                self.after(0, lambda: self._on_ssh_connect_failed(err))
+
+        threading.Thread(target=_try_passphrase, daemon=True).start()
 
     def _on_ssh_need_password(self) -> None:
         host = self._ssh_host_var.get()

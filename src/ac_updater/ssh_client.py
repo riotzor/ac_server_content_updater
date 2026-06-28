@@ -43,11 +43,15 @@ class SshClient:
         return self._ssh is not None
 
     def connect(
-        self, password: str | None = None, key_path: str | None = None
+        self,
+        password: str | None = None,
+        key_path: str | None = None,
+        passphrase: str | None = None,
     ) -> None:
         """Connect to the remote host.
 
         key_path: explicit path to a private key file; disables ~/.ssh/ fallback.
+        passphrase: decryption passphrase for key_path (ignored when password is set).
         password: use password auth only (disables key lookup).
         No args: tries SSH agent and all ~/.ssh/id_* key files.
         Raises paramiko.AuthenticationException on auth failure.
@@ -71,6 +75,8 @@ class SshClient:
         elif key_path:
             kwargs["key_filename"] = key_path
             kwargs["look_for_keys"] = False
+            if passphrase is not None:
+                kwargs["passphrase"] = passphrase
         ssh.connect(self._host, **kwargs)
         self._ssh = ssh
         self._sftp = ssh.open_sftp()
