@@ -326,6 +326,11 @@ class _App(tk.Tk):
         ttk.Button(svc_row, text="Restart", command=self._on_restart_service).pack(
             side="left", padx=(4, 0)
         )
+        ttk.Separator(svc_row, orient="vertical").pack(side="left", fill="y", padx=(10, 8))
+        ttk.Label(svc_row, text="Status:").pack(side="left")
+        self._svc_status_var = tk.StringVar(value="—")
+        self._svc_status_label = ttk.Label(svc_row, textvariable=self._svc_status_var)
+        self._svc_status_label.pack(side="left", padx=(4, 0))
         self._server_svc_row = svc_row
 
         # Cars management (row=1, hidden until a server is selected)
@@ -1021,6 +1026,8 @@ class _App(tk.Tk):
         self._server_tracks_lf.grid_remove()
         self._server_mgmt_placeholder.grid(row=0, column=0, rowspan=5, pady=20)
         self._active_track_var.set("—")
+        self._svc_status_var.set("—")
+        self._svc_status_label.configure(foreground=_GRAY)
 
     def _on_server_selected(self, event: object = None) -> None:
         display = self._ssh_server_var.get()
@@ -1036,8 +1043,12 @@ class _App(tk.Tk):
                 cars = client.list_server_cars(server_dir)
                 tracks = client.list_server_tracks(server_dir)
                 active = client.read_active_track(server_dir)
+                status = client.get_service_status(f"{server_name}.service")
                 self.after(
-                    0, lambda: self._on_server_mgmt_loaded(server_name, cars, tracks, active)
+                    0,
+                    lambda: self._on_server_mgmt_loaded(
+                        server_name, cars, tracks, active, status
+                    ),
                 )
             except Exception as exc:
                 log.error("Failed to load server content for %s: %s", server_name, exc)
@@ -1050,12 +1061,14 @@ class _App(tk.Tk):
         cars: list[str],
         tracks: list[str],
         active_track: str,
+        service_status: str = "unknown",
     ) -> None:
         if server_name != self._current_server_name:
             return
         self._server_mgmt_placeholder.grid_remove()
 
         self._server_svc_row.grid(row=0, column=0, sticky="ew", pady=(0, 6))
+        self._update_svc_status(service_status)
         self._server_cars_panel.set_items(cars)
         self._server_cars_lf.grid(row=1, column=0, sticky="nsew", pady=(0, 4))
 
@@ -1064,9 +1077,19 @@ class _App(tk.Tk):
         self._server_tracks_lf.grid(row=2, column=0, sticky="nsew")
 
         log.info(
-            "Server management panel loaded: %s — %d cars, %d tracks",
-            server_name, len(cars), len(tracks),
+            "Server management panel loaded: %s — %d cars, %d tracks, status=%s",
+            server_name, len(cars), len(tracks), service_status,
         )
+
+    def _update_svc_status(self, status: str) -> None:
+        self._svc_status_var.set(status)
+        color = {
+            "active": _GREEN,
+            "activating": _ORANGE,
+            "deactivating": _ORANGE,
+            "failed": _RED,
+        }.get(status, _GRAY)
+        self._svc_status_label.configure(foreground=color)
 
     def _on_start_service(self) -> None:
         self._run_service_command("start")
@@ -1095,7 +1118,9 @@ class _App(tk.Tk):
                     client.restart_service(service)
             except RuntimeError as exc:
                 error = str(exc)
+            new_status = client.get_service_status(service)
             self.after(0, self._stop_progress)
+            self.after(0, lambda: self._update_svc_status(new_status))
             ts = datetime.now().strftime("%H:%M:%S")
             if error:
                 self.after(0, lambda: self._append_server_result(f"[{ts}]  {error}", "error"))

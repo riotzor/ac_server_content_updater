@@ -205,6 +205,17 @@ class SshClient:
         self._exec(f"sudo systemctl stop {shlex.quote(service_name)}")
         log.info("Service stopped: %s", service_name)
 
+    def get_service_status(self, service_name: str) -> str:
+        """Return the systemd active state: 'active', 'inactive', 'failed', etc.
+
+        systemctl is-active exits non-zero for inactive/failed states, so
+        '|| true' is appended to prevent _exec from raising.
+        """
+        status = self._exec(
+            f"systemctl is-active {shlex.quote(service_name)} || true"
+        ).strip()
+        return status or "unknown"
+
     def start_service(self, service_name: str) -> None:
         """Start a systemd service on the remote host via sudo."""
         log.info("Starting service: %s", service_name)
