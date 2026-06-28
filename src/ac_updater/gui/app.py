@@ -157,7 +157,7 @@ class _App(tk.Tk):
         self._build_nextcloud_tab(tab3)
         self._build_archive_tab(tab4)
 
-        self._nb.select(1)  # Server Manager is the default tab
+        self._nb.select(1)  # type: ignore[no-untyped-call]  # Server Manager default tab
         self._nb.bind("<<NotebookTabChanged>>", self._on_tab_changed)
 
     def _build_content_tab(self, parent: ttk.Frame, content: dict[str, list[str]]) -> None:
