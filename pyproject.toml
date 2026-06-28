@@ -5,6 +5,7 @@ requires-python = ">=3.12"
 dependencies = [
     "requests>=2.32",
     "pyNextcloud>=1.0",
+    "keyring>=24.0",
 ]
 
 [project.optional-dependencies]
