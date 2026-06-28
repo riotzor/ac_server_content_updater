@@ -6,6 +6,7 @@ dependencies = [
     "requests>=2.32",
     "pyNextcloud>=1.0",
     "keyring>=24.0",
+    "paramiko>=3.0",
 ]
 
 [project.optional-dependencies]
