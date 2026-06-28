@@ -320,8 +320,8 @@ class SshClient:
         for name in names:
             path = f"{base}/{name}"
             self._exec(
-                f"chown -R {shlex.quote(owner)} {shlex.quote(path)} && "
-                f"chmod -R 775 {shlex.quote(path)}"
+                f"sudo chown -R {shlex.quote(owner)} {shlex.quote(path)} && "
+                f"sudo chmod -R 775 {shlex.quote(path)}"
             )
             log.info("Fixed permissions on %s/%s", category, name)
 

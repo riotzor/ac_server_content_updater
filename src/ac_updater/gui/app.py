@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 import logging
 import os
 import subprocess
@@ -1077,7 +1078,10 @@ class _App(tk.Tk):
             ts = datetime.now().strftime("%H:%M:%S")
             if errors:
                 for e in errors:
-                    self.after(0, lambda e=e: self._append_server_result(f"[{ts}]  {e}", "error"))
+                    self.after(
+                        0,
+                        functools.partial(self._append_server_result, f"[{ts}]  {e}", "error"),
+                    )
                 self.after(0, lambda: self._set_status("Permission fix failed (see results)", _RED))
             else:
                 n = len(selected)

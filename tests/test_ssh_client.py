@@ -701,8 +701,8 @@ def test_fix_permissions_runs_chown_and_chmod() -> None:
     client.fix_permissions("/home/acserver/ac-drift", "cars", ["ferrari_458"])
 
     cmd: str = mock_ssh.exec_command.call_args[0][0]
-    assert "chown -R" in cmd
-    assert "chmod -R 775" in cmd
+    assert "sudo chown -R" in cmd
+    assert "sudo chmod -R 775" in cmd
     assert "content/cars/ferrari_458" in cmd
 
 
