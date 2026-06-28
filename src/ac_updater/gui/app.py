@@ -22,7 +22,7 @@ from ac_updater.nextcloud_client import NextcloudClient
 from ac_updater.selection_store import save_selection
 from ac_updater.server_names import get_display_name
 from ac_updater.share_config import load_share_path, save_share_path
-from ac_updater.ssh_client import DeployResult, SshClient
+from ac_updater.ssh_client import _AC_HOME, DeployResult, SshClient
 from ac_updater.ssh_config import load_ssh_config, save_ssh_config
 
 log = logging.getLogger(__name__)
@@ -880,12 +880,13 @@ class _App(tk.Tk):
         def _worker() -> None:
             result = client.deploy(server_name, selection, on_progress=on_progress)
             self.after(0, self._stop_progress)
-            self.after(0, lambda: self._on_deploy_done(result, label))
-            self.after(0, lambda: self._ssh_deploy_btn.state(["!disabled"]))
+            self.after(0, lambda: self._on_deploy_done(result, label, server_name))
 
         threading.Thread(target=_worker, daemon=True).start()
 
-    def _on_deploy_done(self, result: DeployResult, server_label: str) -> None:
+    def _on_deploy_done(
+        self, result: DeployResult, server_label: str, server_name: str
+    ) -> None:
         ts = datetime.now().strftime("%H:%M:%S")
         summary = f"[{ts}]  Deployed {result.deployed} item(s) to {server_label}"
 
@@ -909,10 +910,110 @@ class _App(tk.Tk):
             self._append_server_result(summary, "ok")
             self._set_status(f"Deployed {result.deployed} item(s) to {server_label}", _GREEN)
 
+        deployed_cars = [name for cat, name in result.deployed_items if cat == "cars"]
+        if not deployed_cars:
+            self._ssh_deploy_btn.state(["!disabled"])
+            return
+
+        service = f"{server_name}.service"
+        if messagebox.askyesno(
+            "Update Server Config",
+            f"{len(deployed_cars)} car(s) were deployed to {server_label}.\n\n"
+            f"The server's entry_list.ini needs updating for them to appear in-game.\n\n"
+            f"Stop {service} and update the config now?",
+            parent=self,
+        ):
+            cars_with_skins = [
+                (name, _get_skin_for_car(self._install_dir, name))
+                for name in deployed_cars
+            ]
+            self._on_stop_and_update(server_name, server_label, service, cars_with_skins)
+        else:
+            self._ssh_deploy_btn.state(["!disabled"])
+
+    def _on_stop_and_update(
+        self,
+        server_name: str,
+        server_label: str,
+        service: str,
+        cars_with_skins: list[tuple[str, str]],
+    ) -> None:
+        client = self._ssh_client
+        if client is None:
+            self._ssh_deploy_btn.state(["!disabled"])
+            return
+        server_dir = f"{_AC_HOME}/{server_name}"
+        self._start_progress(f"Stopping {service}…")
+        log.info(
+            "Stopping %s and updating entry_list.ini: %d car(s)", service, len(cars_with_skins)
+        )
+
+        def _worker() -> None:
+            stopped = False
+            updated = False
+            error: str | None = None
+
+            try:
+                client.stop_service(service)
+                stopped = True
+                ts = datetime.now().strftime("%H:%M:%S")
+                self.after(0, lambda: self._append_server_result(
+                    f"[{ts}]  Stopped {service}", "ok"
+                ))
+            except RuntimeError as exc:
+                error = f"Failed to stop {service}: {exc}"
+                log.error("Stop service failed: %s", exc)
+
+            if stopped:
+                try:
+                    client.update_entry_list(server_dir, cars_with_skins)
+                    updated = True
+                    ts2 = datetime.now().strftime("%H:%M:%S")
+                    n = len(cars_with_skins)
+                    self.after(0, lambda: self._append_server_result(
+                        f"[{ts2}]  entry_list.ini updated ({n} car(s) added)", "ok"
+                    ))
+                except Exception as exc:
+                    error = f"Failed to update entry_list.ini: {exc}"
+                    log.error("entry_list update failed: %s", exc)
+
+            self.after(0, self._stop_progress)
+            self.after(0, lambda: self._on_post_deploy_done(service, stopped, updated, error))
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _on_post_deploy_done(
+        self,
+        service: str,
+        stopped: bool,
+        updated: bool,
+        error: str | None,
+    ) -> None:
+        self._ssh_deploy_btn.state(["!disabled"])
+        if error:
+            self._append_server_result(f"    {error}", "error")
+            self._set_status(error, _RED)
+        elif stopped and updated:
+            self._set_status(
+                f"Done — {service} stopped and entry_list.ini updated", _GREEN
+            )
+        elif stopped:
+            self._set_status(f"{service} stopped (entry_list.ini not updated)", _ORANGE)
+
 
 # ------------------------------------------------------------------
 # Helpers
 # ------------------------------------------------------------------
+
+
+def _get_skin_for_car(install_dir: Path, car_name: str) -> str:
+    """Return the first available skin name for a car, or empty string if none found."""
+    skins_dir = install_dir / "content" / "cars" / car_name / "skins"
+    try:
+        skins = sorted(p.name for p in skins_dir.iterdir() if p.is_dir())
+        return skins[0] if skins else ""
+    except OSError:
+        return ""
 
 
 def _default_archive_name(selection: dict[str, list[str]]) -> str:
