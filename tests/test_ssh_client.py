@@ -307,3 +307,161 @@ def test_deploy_empty_selection_returns_zero_counts() -> None:
     assert result.deployed == 0
     assert result.skipped == 0
     mock_ssh.exec_command.assert_not_called()
+
+
+def test_deploy_tracks_deployed_items() -> None:
+    mock_ssh = _make_mock_ssh()
+    mock_ssh.exec_command.side_effect = _exec_for_deploy(True)
+
+    with patch("ac_updater.ssh_client.paramiko.SSHClient", return_value=mock_ssh):
+        client = SshClient("h", "u")
+        client.connect()
+    result = client.deploy("ac-drift", {"cars": ["ferrari", "bmw"], "tracks": ["monza"]})
+
+    assert ("cars", "ferrari") in result.deployed_items
+    assert ("cars", "bmw") in result.deployed_items
+    assert ("tracks", "monza") in result.deployed_items
+    assert len(result.deployed_items) == 3
+
+
+def test_deploy_includes_chown_and_chmod() -> None:
+    mock_ssh = _make_mock_ssh()
+    mock_ssh.exec_command.side_effect = _exec_for_deploy(True)
+
+    with patch("ac_updater.ssh_client.paramiko.SSHClient", return_value=mock_ssh):
+        client = SshClient("h", "u")
+        client.connect()
+    client.deploy("ac-drift", {"cars": ["ferrari_458"]})
+
+    cp_cmds = [
+        c[0][0] for c in mock_ssh.exec_command.call_args_list if "cp -r" in c[0][0]
+    ]
+    assert len(cp_cmds) == 1
+    assert "chown" in cp_cmds[0]
+    assert "chmod" in cp_cmds[0]
+    assert "775" in cp_cmds[0]
+
+
+def test_deploy_skipped_item_not_in_deployed_items() -> None:
+    mock_ssh = _make_mock_ssh()
+    mock_ssh.exec_command.side_effect = _exec_for_deploy(False)
+
+    with patch("ac_updater.ssh_client.paramiko.SSHClient", return_value=mock_ssh):
+        client = SshClient("h", "u")
+        client.connect()
+    result = client.deploy("ac-drift", {"cars": ["missing_car"]})
+
+    assert result.deployed_items == []
+    assert result.skipped == 1
+
+
+# ---------------------------------------------------------------------------
+# stop_service
+# ---------------------------------------------------------------------------
+
+
+def test_stop_service_calls_systemctl_stop() -> None:
+    mock_ssh = _make_mock_ssh()
+    mock_ssh.exec_command.return_value = (MagicMock(), _make_stdout("", 0), _make_stderr())
+
+    with patch("ac_updater.ssh_client.paramiko.SSHClient", return_value=mock_ssh):
+        client = SshClient("h", "u")
+        client.connect()
+    client.stop_service("ac-drift.service")
+
+    cmd: str = mock_ssh.exec_command.call_args[0][0]
+    assert "systemctl stop" in cmd
+    assert "ac-drift.service" in cmd
+
+
+def test_stop_service_raises_on_failure() -> None:
+    mock_ssh = _make_mock_ssh()
+    mock_ssh.exec_command.return_value = (
+        MagicMock(), _make_stdout("", 1), _make_stderr("Failed to stop")
+    )
+
+    with patch("ac_updater.ssh_client.paramiko.SSHClient", return_value=mock_ssh):
+        client = SshClient("h", "u")
+        client.connect()
+
+    import pytest
+    with pytest.raises(RuntimeError, match="Failed to stop"):
+        client.stop_service("ac-drift.service")
+
+
+# ---------------------------------------------------------------------------
+# update_entry_list
+# ---------------------------------------------------------------------------
+
+
+def _sftp_file(content: bytes = b"") -> MagicMock:
+    fh = MagicMock()
+    fh.__enter__ = lambda s: s
+    fh.__exit__ = MagicMock(return_value=False)
+    fh.read.return_value = content
+    fh.write = MagicMock()
+    return fh
+
+
+def test_update_entry_list_appends_from_next_index() -> None:
+    mock_ssh = _make_mock_ssh()
+    sftp = mock_ssh.open_sftp.return_value
+
+    existing = b"[CAR_0]\nMODEL=old_car\nSKIN=\nSPECTATOR_MODE=0\n"
+    read_fh = _sftp_file(existing)
+    write_fh = _sftp_file()
+    sftp.open.side_effect = [read_fh, write_fh]
+
+    with patch("ac_updater.ssh_client.paramiko.SSHClient", return_value=mock_ssh):
+        client = SshClient("h", "u")
+        client.connect()
+    client.update_entry_list("/home/acserver/ac-drift", [("ferrari_458", "red_skin")])
+
+    written: str = write_fh.write.call_args[0][0].decode("utf-8")
+    assert "[CAR_1]" in written
+    assert "MODEL=ferrari_458" in written
+    assert "SKIN=red_skin" in written
+
+
+def test_update_entry_list_starts_at_zero_for_empty_file() -> None:
+    mock_ssh = _make_mock_ssh()
+    sftp = mock_ssh.open_sftp.return_value
+
+    read_fh = MagicMock()
+    read_fh.__enter__ = lambda s: s
+    read_fh.__exit__ = MagicMock(return_value=False)
+    read_fh.read.side_effect = OSError("not found")
+
+    write_fh = _sftp_file()
+    sftp.open.side_effect = [OSError("not found"), write_fh]
+
+    with patch("ac_updater.ssh_client.paramiko.SSHClient", return_value=mock_ssh):
+        client = SshClient("h", "u")
+        client.connect()
+    client.update_entry_list("/home/acserver/ac-drift", [("ferrari_458", "")])
+
+    written: str = write_fh.write.call_args[0][0].decode("utf-8")
+    assert "[CAR_0]" in written
+    assert "MODEL=ferrari_458" in written
+
+
+def test_update_entry_list_continues_from_highest_car_index() -> None:
+    mock_ssh = _make_mock_ssh()
+    sftp = mock_ssh.open_sftp.return_value
+
+    existing = (
+        b"[CAR_0]\nMODEL=car_a\n"
+        b"[CAR_3]\nMODEL=car_d\n"
+        b"[CAR_1]\nMODEL=car_b\n"
+    )
+    read_fh = _sftp_file(existing)
+    write_fh = _sftp_file()
+    sftp.open.side_effect = [read_fh, write_fh]
+
+    with patch("ac_updater.ssh_client.paramiko.SSHClient", return_value=mock_ssh):
+        client = SshClient("h", "u")
+        client.connect()
+    client.update_entry_list("/home/acserver/ac-drift", [("new_car", "default")])
+
+    written: str = write_fh.write.call_args[0][0].decode("utf-8")
+    assert "[CAR_4]" in written

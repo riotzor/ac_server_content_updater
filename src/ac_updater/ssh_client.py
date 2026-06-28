@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import shlex
 import stat as stat_module
 from collections.abc import Callable
@@ -21,6 +22,7 @@ class DeployResult:
     deployed: int = 0
     skipped: int = 0
     errors: list[str] = field(default_factory=list)
+    deployed_items: list[tuple[str, str]] = field(default_factory=list)  # (category, name)
 
 
 class SshClient:
@@ -153,12 +155,17 @@ class SshClient:
                     log.debug("Skipped (not on share): %s/%s", category, name)
                     result.skipped += 1
                 else:
+                    dst = f"{dst_parent}/{name}"
+                    owner = f"{self._username}:{self._username}"
                     self._exec(
                         f"mkdir -p {shlex.quote(dst_parent)} && "
-                        f"cp -r {shlex.quote(src)} {shlex.quote(dst_parent)}/"
+                        f"cp -r {shlex.quote(src)} {shlex.quote(dst_parent)}/ && "
+                        f"chown -R {shlex.quote(owner)} {shlex.quote(dst)} && "
+                        f"chmod -R 775 {shlex.quote(dst)}"
                     )
                     log.info("Deployed %s/%s → %s", category, name, server_name)
                     result.deployed += 1
+                    result.deployed_items.append((category, name))
             except RuntimeError as exc:
                 log.error("Deploy error %s/%s: %s", category, name, exc)
                 result.errors.append(f"{category}/{name}: {exc}")
@@ -170,6 +177,64 @@ class SshClient:
             result.deployed, result.skipped, len(result.errors),
         )
         return result
+
+    def stop_service(self, service_name: str) -> None:
+        """Stop a systemd service on the remote host."""
+        log.info("Stopping service: %s", service_name)
+        self._exec(f"systemctl stop {shlex.quote(service_name)}")
+        log.info("Service stopped: %s", service_name)
+
+    def update_entry_list(
+        self,
+        server_dir: str,
+        cars: list[tuple[str, str]],
+    ) -> None:
+        """Append new CAR_N entries to <server_dir>/cfg/entry_list.ini.
+
+        Reads the existing file to determine the next CAR index, then appends
+        one section per car in the standard AC Server format.
+        """
+        assert self._sftp is not None, "Not connected"
+        path = f"{server_dir}/cfg/entry_list.ini"
+        log.info("Updating entry_list.ini: %s  cars=%d", path, len(cars))
+
+        try:
+            with self._sftp.open(path, "r") as fh:
+                existing: str = fh.read().decode("utf-8", errors="replace")
+        except OSError:
+            existing = ""
+
+        indices = [
+            int(m.group(1))
+            for m in re.finditer(r"^\[CAR_(\d+)\]", existing, re.MULTILINE)
+        ]
+        next_n = max(indices, default=-1) + 1
+
+        entries = []
+        for i, (car_name, skin) in enumerate(cars):
+            n = next_n + i
+            entries.append(
+                f"[CAR_{n}]\n"
+                f"MODEL={car_name}\n"
+                f"SKIN={skin}\n"
+                f"SPECTATOR_MODE=0\n"
+                f"DRIVERNAME=\n"
+                f"TEAM=\n"
+                f"GUID=\n"
+                f"BALLAST=0\n"
+                f"RESTRICTOR=0\n"
+            )
+
+        separator = "\n" if existing.strip() else ""
+        new_block = (separator + "\n".join(entries)).encode("utf-8")
+
+        with self._sftp.open(path, "a") as fh:
+            fh.write(new_block)
+
+        log.info(
+            "entry_list.ini updated: added %d car(s) starting at CAR_%d",
+            len(cars), next_n,
+        )
 
     # ------------------------------------------------------------------
     # Internal helpers
