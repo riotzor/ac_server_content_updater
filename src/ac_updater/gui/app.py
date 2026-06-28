@@ -1184,38 +1184,46 @@ class _App(tk.Tk):
         service = f"{server_name}.service"
         active_track = self._active_track_var.get()
         active_deleted = category == "tracks" and active_track in selected and active_track != "—"
-        extra = (
-            "\n\nentry_list.ini will be rebuilt from remaining cars."
-            if category == "cars"
-            else (
-                f"\n\nActive track '{active_track}' will be deleted — "
-                "the next available track will be set and the service restarted."
-                if active_deleted
-                else ""
+
+        # Only cars and active-track deletion need a service stop/start cycle
+        needs_service_cycle = category == "cars" or active_deleted
+        if needs_service_cycle:
+            detail = (
+                "\n\nentry_list.ini will be rebuilt and the service restarted."
+                if category == "cars"
+                else (
+                    f"\n\nActive track '{active_track}' will be deleted — "
+                    "the next available track will be set and the service restarted."
+                )
             )
-        )
-        if not messagebox.askyesno(
-            "Confirm Delete",
-            f"Delete {len(selected)} {category} from {server_label}?\n"
-            f"This will stop {service}.{extra}",
-            parent=self,
-        ):
+            confirm_msg = (
+                f"Delete {len(selected)} {category} from {server_label}?\n"
+                f"This will stop {service}.{detail}"
+            )
+        else:
+            confirm_msg = f"Delete {len(selected)} {category} from {server_label}?"
+
+        if not messagebox.askyesno("Confirm Delete", confirm_msg, parent=self):
             return
 
         client = self._ssh_client
         server_dir = f"{_AC_HOME}/{server_name}"
-        self._start_progress(f"Stopping {service}…")
+        self._start_progress(
+            f"Stopping {service}…" if needs_service_cycle else f"Deleting {category}…"
+        )
 
         def _worker() -> None:
             error: str | None = None
-            try:
-                client.stop_service(service)
-                ts = datetime.now().strftime("%H:%M:%S")
-                self.after(0, lambda: self._append_server_result(
-                    f"[{ts}]  Stopped {service}", "ok"
-                ))
-            except RuntimeError as exc:
-                error = f"Failed to stop {service}: {exc}"
+
+            if needs_service_cycle:
+                try:
+                    client.stop_service(service)
+                    ts = datetime.now().strftime("%H:%M:%S")
+                    self.after(0, lambda: self._append_server_result(
+                        f"[{ts}]  Stopped {service}", "ok"
+                    ))
+                except RuntimeError as exc:
+                    error = f"Failed to stop {service}: {exc}"
 
             if error is None:
                 try:
@@ -1258,15 +1266,20 @@ class _App(tk.Tk):
                     except Exception as exc:
                         error = f"Failed to update active track: {exc}"
 
-            if error is None and active_deleted:
+            if error is None and needs_service_cycle:
+                action = "restart" if active_deleted else "start"
                 try:
-                    client.restart_service(service)
+                    if action == "restart":
+                        client.restart_service(service)
+                    else:
+                        client.start_service(service)
                     ts = datetime.now().strftime("%H:%M:%S")
+                    verb = "Restarted" if action == "restart" else "Started"
                     self.after(0, lambda: self._append_server_result(
-                        f"[{ts}]  Restarted {service}", "ok"
+                        f"[{ts}]  {verb} {service}", "ok"
                     ))
                 except RuntimeError as exc:
-                    error = f"Failed to restart {service}: {exc}"
+                    error = f"Failed to {action} {service}: {exc}"
 
             self.after(0, self._stop_progress)
             if error:
