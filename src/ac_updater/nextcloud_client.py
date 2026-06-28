@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import uuid
 import xml.etree.ElementTree as ET
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import unquote, urlparse
@@ -21,6 +22,8 @@ log = logging.getLogger(__name__)
 
 _DAV = "DAV:"
 _CHUNK_SIZE = 10 * 1024 * 1024  # 10 MB — stays under Cloudflare's body-size limits
+
+_ProgressCallback = Callable[[int, int], None]  # (bytes_sent, total_bytes)
 
 
 @dataclass(frozen=True)
@@ -110,11 +113,18 @@ class NextcloudClient:
     # Create
     # ------------------------------------------------------------------
 
-    def upload_file(self, local_path: Path, remote_path: str) -> None:
+    def upload_file(
+        self,
+        local_path: Path,
+        remote_path: str,
+        on_progress: _ProgressCallback | None = None,
+    ) -> None:
         """Upload local_path to remote_path, creating parent dirs as needed.
 
         Files larger than _CHUNK_SIZE use Nextcloud's chunked-upload protocol
         so that no single HTTP body exceeds proxy size limits (e.g. Cloudflare).
+        on_progress(bytes_sent, total_bytes) is called after each chunk for large
+        files; it is not called for single-PUT uploads (files < _CHUNK_SIZE).
         """
         file_size = local_path.stat().st_size
         log.info(
@@ -127,7 +137,7 @@ class NextcloudClient:
         if parent:
             self._ensure_dirs(parent)
         if file_size > _CHUNK_SIZE:
-            self._upload_chunked(local_path, remote_path)
+            self._upload_chunked(local_path, remote_path, on_progress)
         else:
             self._upload_single(local_path, remote_path)
         log.info("Upload complete: %s", remote_path)
@@ -145,7 +155,12 @@ class NextcloudClient:
             log.error("Upload failed: HTTP %d — %s", resp.status_code, resp.text[:300])
             raise NextcloudError(f"Upload failed ({resp.status_code}): {resp.text[:300]}")
 
-    def _upload_chunked(self, local_path: Path, remote_path: str) -> None:
+    def _upload_chunked(
+        self,
+        local_path: Path,
+        remote_path: str,
+        on_progress: _ProgressCallback | None = None,
+    ) -> None:
         """Nextcloud chunked-upload protocol (dav/uploads).
 
         1. MKCOL  /remote.php/dav/uploads/{user}/{transfer_id}/
@@ -181,6 +196,8 @@ class NextcloudClient:
                         f"Chunk upload failed at offset {offset} ({resp.status_code})"
                     )
                 offset += len(chunk)
+                if on_progress:
+                    on_progress(offset, file_size)
                 chunk_num += 1
 
         log.debug("MOVE to assemble chunks at %s", remote_path)

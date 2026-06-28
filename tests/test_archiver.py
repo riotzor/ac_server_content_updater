@@ -75,7 +75,7 @@ def test_create_archive_does_nothing_for_empty_selection(tmp_path: Path) -> None
     mock_run.assert_not_called()
 
 
-def test_create_archive_calls_7zip_with_correct_command(tmp_path: Path) -> None:
+def test_create_archive_calls_7zip_once_per_item(tmp_path: Path) -> None:
     fake_exe = tmp_path / "7z.exe"
     output = tmp_path / "archive.7z"
 
@@ -87,14 +87,19 @@ def test_create_archive_calls_7zip_with_correct_command(tmp_path: Path) -> None:
             sevenzip_exe=fake_exe,
         )
 
-    mock_run.assert_called_once()
-    cmd: list[str] = mock_run.call_args[0][0]
-    assert cmd[0] == str(fake_exe)
-    assert cmd[1] == "a"
-    assert cmd[2] == "-t7z"
-    assert cmd[3] == str(output)
-    assert any("ferrari_458" in arg for arg in cmd)
-    assert any("monza" in arg for arg in cmd)
+    # One subprocess call per item
+    assert mock_run.call_count == 2
+    items_seen = [call[0][0][-1] for call in mock_run.call_args_list]
+    assert any("ferrari_458" in item for item in items_seen)
+    assert any("monza" in item for item in items_seen)
+
+    # Every call shares the same structure
+    for call in mock_run.call_args_list:
+        cmd: list[str] = call[0][0]
+        assert cmd[0] == str(fake_exe)
+        assert cmd[1] == "a"
+        assert cmd[2] == "-t7z"
+        assert cmd[3] == str(output)
 
 
 def test_create_archive_runs_from_content_dir(tmp_path: Path) -> None:
@@ -108,7 +113,8 @@ def test_create_archive_runs_from_content_dir(tmp_path: Path) -> None:
             sevenzip_exe=fake_exe,
         )
 
-    assert mock_run.call_args[1]["cwd"] == tmp_path / "content"
+    for call in mock_run.call_args_list:
+        assert call[1]["cwd"] == tmp_path / "content"
 
 
 def test_create_archive_passes_check_true(tmp_path: Path) -> None:
@@ -122,7 +128,36 @@ def test_create_archive_passes_check_true(tmp_path: Path) -> None:
             sevenzip_exe=fake_exe,
         )
 
-    assert mock_run.call_args[1]["check"] is True
+    for call in mock_run.call_args_list:
+        assert call[1]["check"] is True
+
+
+def test_create_archive_calls_on_progress_for_each_item(tmp_path: Path) -> None:
+    fake_exe = tmp_path / "7z.exe"
+    calls: list[tuple[int, int]] = []
+
+    with patch("ac_updater.archiver.subprocess.run"):
+        create_archive(
+            tmp_path,
+            {"cars": ["car_a", "car_b", "car_c"]},
+            tmp_path / "out.7z",
+            sevenzip_exe=fake_exe,
+            on_progress=lambda done, total: calls.append((done, total)),
+        )
+
+    assert calls == [(1, 3), (2, 3), (3, 3)]
+
+
+def test_create_archive_no_progress_calls_when_callback_not_provided(tmp_path: Path) -> None:
+    fake_exe = tmp_path / "7z.exe"
+    with patch("ac_updater.archiver.subprocess.run"):
+        # Should not raise even though on_progress is None
+        create_archive(
+            tmp_path,
+            {"cars": ["some_car"]},
+            tmp_path / "out.7z",
+            sevenzip_exe=fake_exe,
+        )
 
 
 def test_create_archive_propagates_subprocess_error(tmp_path: Path) -> None:

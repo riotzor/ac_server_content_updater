@@ -6,6 +6,8 @@ import subprocess
 from collections.abc import Callable
 from pathlib import Path
 
+_ProgressCallback = Callable[[int, int], None]
+
 log = logging.getLogger(__name__)
 
 _SEVENZIP_COMMON_PATHS: tuple[Path, ...] = (
@@ -40,11 +42,13 @@ def create_archive(
     output_path: Path,
     *,
     sevenzip_exe: Path | None = None,
+    on_progress: _ProgressCallback | None = None,
 ) -> None:
     """Compress selected content into a .7z archive.
 
-    The archive preserves the AC content layout (cars/<name>, tracks/<name>)
-    so it can be extracted directly into a server's content directory.
+    Items are added one at a time so callers can report per-item progress via
+    on_progress(items_done, total_items).  The archive preserves the AC content
+    layout (cars/<name>, tracks/<name>) for direct extraction into a server.
 
     Raises:
         FileNotFoundError: if 7-Zip cannot be located.
@@ -67,20 +71,28 @@ def create_archive(
         log.debug("create_archive called with empty selection — nothing to do")
         return
 
+    total = len(items)
     content_dir = install_dir / "content"
     log.info(
         "Creating archive: output=%s  items=%d  cwd=%s  exe=%s",
-        output_path, len(items), content_dir, exe,
+        output_path, total, content_dir, exe,
     )
-    cmd = [str(exe), "a", "-t7z", str(output_path), *items]
-    try:
-        subprocess.run(cmd, cwd=content_dir, check=True, capture_output=True)
-        log.info("Archive created successfully: %s", output_path)
-    except subprocess.CalledProcessError as exc:
-        log.error(
-            "7-Zip failed (exit %d): stdout=%s  stderr=%s",
-            exc.returncode,
-            exc.stdout.decode(errors="replace")[:500] if exc.stdout else "",
-            exc.stderr.decode(errors="replace")[:500] if exc.stderr else "",
-        )
-        raise
+
+    for i, item in enumerate(items):
+        log.debug("Archiving item %d/%d: %s", i + 1, total, item)
+        cmd = [str(exe), "a", "-t7z", str(output_path), item]
+        try:
+            subprocess.run(cmd, cwd=content_dir, check=True, capture_output=True)
+        except subprocess.CalledProcessError as exc:
+            log.error(
+                "7-Zip failed on '%s' (exit %d): stdout=%s  stderr=%s",
+                item,
+                exc.returncode,
+                exc.stdout.decode(errors="replace")[:500] if exc.stdout else "",
+                exc.stderr.decode(errors="replace")[:500] if exc.stderr else "",
+            )
+            raise
+        if on_progress:
+            on_progress(i + 1, total)
+
+    log.info("Archive created successfully: %s", output_path)

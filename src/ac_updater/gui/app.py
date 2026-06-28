@@ -273,13 +273,27 @@ class _App(tk.Tk):
         self._status_label.configure(foreground=color)
 
     def _start_progress(self, message: str) -> None:
+        """Indeterminate spinner — use for operations with unknown duration."""
+        self._progress.configure(mode="indeterminate")
         self._set_status(message, _ORANGE)
         self._progress.pack(side="left", padx=(10, 0))
         self._progress.start(12)
 
+    def _start_progress_determinate(self, message: str, total: int) -> None:
+        """Determinate bar — use when total steps are known (archive creation)."""
+        self._progress.stop()
+        self._progress.configure(mode="determinate", maximum=total, value=0)
+        self._set_status(message, _ORANGE)
+        self._progress.pack(side="left", padx=(10, 0))
+
+    def _update_progress(self, done: int, total: int, message: str) -> None:
+        self._progress.configure(value=done)
+        self._set_status(message, _ORANGE)
+
     def _stop_progress(self) -> None:
         self._progress.stop()
         self._progress.pack_forget()
+        self._progress.configure(mode="indeterminate", value=0)
 
     def _disable_buttons(self) -> None:
         for btn in (self._archive_btn, self._upload_btn, self._server_btn):
@@ -416,13 +430,20 @@ class _App(tk.Tk):
 
         output_path = Path(output_str)
         install_dir = self._install_dir
-        log.info("Create Archive initiated: output=%s", output_path)
-        self._start_progress("Creating archive…")
+        total_items = sum(len(v) for v in selection.values())
+        log.info("Create Archive initiated: output=%s  items=%d", output_path, total_items)
+        self._start_progress_determinate(
+            f"Creating archive… 0 / {total_items} items", total_items
+        )
         self._disable_buttons()
+
+        def on_progress(done: int, total: int) -> None:
+            msg = f"Creating archive… {done} / {total} items"
+            self.after(0, lambda: self._update_progress(done, total, msg))
 
         def _worker() -> None:
             try:
-                create_archive(install_dir, selection, output_path)
+                create_archive(install_dir, selection, output_path, on_progress=on_progress)
                 self.after(0, self._stop_progress)
                 self.after(0, lambda: self._last_archive_var.set(str(output_path)))
                 self.after(
@@ -467,6 +488,7 @@ class _App(tk.Tk):
         install_dir = self._install_dir
         nc_client = self._nc_client
         default_name = _default_archive_name(selection)
+        total_items = sum(len(v) for v in selection.values())
 
         # mkstemp atomically reserves a unique path; unlink so 7-zip creates fresh
         _fd, _tmp = tempfile.mkstemp(suffix=".7z")
@@ -475,14 +497,23 @@ class _App(tk.Tk):
         tmp_path = Path(_tmp)
 
         log.info(
-            "Create & Upload initiated: tmp=%s  default_name=%s", tmp_path, default_name
+            "Create & Upload initiated: tmp=%s  items=%d  default_name=%s",
+            tmp_path, total_items, default_name,
         )
-        self._start_progress("Creating archive…")
+        self._start_progress_determinate(
+            f"Creating archive… 0 / {total_items} items", total_items
+        )
         self._disable_buttons()
+
+        def on_progress(done: int, total: int) -> None:
+            msg = f"Creating archive… {done} / {total} items"
+            self.after(0, lambda: self._update_progress(done, total, msg))
 
         def _worker() -> None:
             try:
-                create_archive(install_dir, selection, tmp_path)
+                create_archive(
+                    install_dir, selection, tmp_path, on_progress=on_progress
+                )
                 self.after(0, lambda: self._on_archive_ready(nc_client, tmp_path, default_name))
             except FileNotFoundError as exc:
                 err = str(exc)
