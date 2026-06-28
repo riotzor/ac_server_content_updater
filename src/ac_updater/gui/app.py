@@ -24,7 +24,7 @@ from ac_updater.nextcloud_client import NextcloudClient
 from ac_updater.selection_store import save_selection
 from ac_updater.server_names import get_display_name
 from ac_updater.share_config import load_share_path, save_share_path
-from ac_updater.ssh_client import _AC_HOME, DeployResult, SshClient
+from ac_updater.ssh_client import _AC_HOME, DeployResult, SshClient, merge_entry_list
 from ac_updater.ssh_config import load_ssh_config, save_ssh_config
 
 log = logging.getLogger(__name__)
@@ -1463,12 +1463,14 @@ class _App(tk.Tk):
 
             if error is None and category == "cars":
                 try:
+                    install_dir = self._install_dir
                     remaining = client.list_server_cars(server_dir)
-                    cars_with_skins = [
-                        (car, _get_skin_for_car(self._install_dir, car))
-                        for car in remaining
-                    ]
-                    client.write_entry_list(server_dir, cars_with_skins)
+                    existing = client.read_entry_list(server_dir)
+                    entries = merge_entry_list(
+                        remaining, existing,
+                        lambda car: _get_skin_for_car(install_dir, car),
+                    )
+                    client.write_entry_list(server_dir, entries)
                     ts = datetime.now().strftime("%H:%M:%S")
                     n = len(remaining)
                     self.after(0, lambda: self._append_server_result(
@@ -1684,15 +1686,17 @@ class _App(tk.Tk):
 
             if stopped:
                 try:
+                    install_dir = self._install_dir
                     all_cars = client.list_server_cars(server_dir)
-                    cars_with_skins = [
-                        (car, _get_skin_for_car(self._install_dir, car))
-                        for car in all_cars
-                    ]
-                    client.write_entry_list(server_dir, cars_with_skins)
+                    existing = client.read_entry_list(server_dir)
+                    entries = merge_entry_list(
+                        all_cars, existing,
+                        lambda car: _get_skin_for_car(install_dir, car),
+                    )
+                    client.write_entry_list(server_dir, entries)
                     updated = True
                     ts2 = datetime.now().strftime("%H:%M:%S")
-                    n = len(cars_with_skins)
+                    n = len(entries)
                     self.after(0, lambda: self._append_server_result(
                         f"[{ts2}]  entry_list.ini rebuilt ({n} car(s))", "ok"
                     ))

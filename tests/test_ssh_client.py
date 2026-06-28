@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 
 import paramiko
 
-from ac_updater.ssh_client import SshClient
+from ac_updater.ssh_client import SshClient, _parse_entry_list, merge_entry_list
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -604,7 +604,10 @@ def test_write_entry_list_numbers_from_zero() -> None:
         client.connect()
     client.write_entry_list(
         "/home/acserver/ac-drift",
-        [("ferrari_458", "red_skin"), ("bmw_m3", "white")],
+        [
+            {"MODEL": "ferrari_458", "SKIN": "red_skin"},
+            {"MODEL": "bmw_m3", "SKIN": "white"},
+        ],
     )
 
     written: str = write_fh.write.call_args[0][0].decode("utf-8")
@@ -624,7 +627,7 @@ def test_write_entry_list_uses_write_mode() -> None:
     with patch("ac_updater.ssh_client.paramiko.SSHClient", return_value=mock_ssh):
         client = SshClient("h", "u")
         client.connect()
-    client.write_entry_list("/home/acserver/ac-drift", [("car_a", "")])
+    client.write_entry_list("/home/acserver/ac-drift", [{"MODEL": "car_a", "SKIN": ""}])
 
     sftp.open.assert_called_once()
     mode: str = sftp.open.call_args[0][1]
@@ -644,6 +647,139 @@ def test_write_entry_list_empty_cars_writes_empty_file() -> None:
 
     written: bytes = write_fh.write.call_args[0][0]
     assert written == b""
+
+
+def test_write_entry_list_preserves_extra_fields() -> None:
+    mock_ssh = _make_mock_ssh()
+    sftp = mock_ssh.open_sftp.return_value
+    write_fh = _sftp_file()
+    sftp.open.return_value = write_fh
+
+    with patch("ac_updater.ssh_client.paramiko.SSHClient", return_value=mock_ssh):
+        client = SshClient("h", "u")
+        client.connect()
+    client.write_entry_list(
+        "/home/acserver/ac-drift",
+        [{"MODEL": "ferrari_458", "SKIN": "red", "BALLAST": "50", "GUID": "abc123"}],
+    )
+
+    written: str = write_fh.write.call_args[0][0].decode("utf-8")
+    assert "BALLAST=50" in written
+    assert "GUID=abc123" in written
+
+
+# ---------------------------------------------------------------------------
+# _parse_entry_list
+# ---------------------------------------------------------------------------
+
+
+def test_parse_entry_list_basic() -> None:
+    text = (
+        "[CAR_0]\nMODEL=ferrari_458\nSKIN=red\nBALLAST=0\n\n"
+        "[CAR_1]\nMODEL=bmw_m3\nSKIN=white\nBALLAST=10\n"
+    )
+    result = _parse_entry_list(text)
+    assert set(result.keys()) == {"ferrari_458", "bmw_m3"}
+    assert result["ferrari_458"]["SKIN"] == "red"
+    assert result["bmw_m3"]["BALLAST"] == "10"
+    assert "MODEL" not in result["ferrari_458"]
+
+
+def test_parse_entry_list_empty_text_returns_empty_dict() -> None:
+    assert _parse_entry_list("") == {}
+
+
+def test_parse_entry_list_first_occurrence_wins_on_duplicate_model() -> None:
+    text = (
+        "[CAR_0]\nMODEL=ferrari_458\nSKIN=red\n\n"
+        "[CAR_1]\nMODEL=ferrari_458\nSKIN=blue\n"
+    )
+    result = _parse_entry_list(text)
+    assert result["ferrari_458"]["SKIN"] == "red"
+
+
+def test_parse_entry_list_ignores_comment_lines() -> None:
+    text = "; this is a comment\n[CAR_0]\nMODEL=car_a\nSKIN=s\n"
+    assert "car_a" in _parse_entry_list(text)
+
+
+# ---------------------------------------------------------------------------
+# merge_entry_list
+# ---------------------------------------------------------------------------
+
+
+def test_merge_preserves_existing_car_settings() -> None:
+    existing = {"ferrari_458": {"SKIN": "original_skin", "BALLAST": "25", "GUID": "xyz"}}
+    entries = merge_entry_list(["ferrari_458"], existing)
+    assert entries[0]["SKIN"] == "original_skin"
+    assert entries[0]["BALLAST"] == "25"
+    assert entries[0]["GUID"] == "xyz"
+
+
+def test_merge_new_car_gets_default_fields() -> None:
+    entries = merge_entry_list(["new_car"], {})
+    assert entries[0]["MODEL"] == "new_car"
+    assert "SKIN" in entries[0]
+    assert "BALLAST" in entries[0]
+
+
+def test_merge_new_car_uses_default_skin_fn() -> None:
+    entries = merge_entry_list(["new_car"], {}, default_skin=lambda c: f"{c}_skin")
+    assert entries[0]["SKIN"] == "new_car_skin"
+
+
+def test_merge_existing_car_not_overwritten_by_default_skin_fn() -> None:
+    existing = {"ferrari_458": {"SKIN": "custom", "BALLAST": "0"}}
+    entries = merge_entry_list(["ferrari_458"], existing, default_skin=lambda c: "default")
+    assert entries[0]["SKIN"] == "custom"
+
+
+def test_merge_preserves_order_of_all_car_names() -> None:
+    existing = {"bmw_m3": {"SKIN": "b"}, "alfa": {"SKIN": "a"}}
+    entries = merge_entry_list(["alfa", "bmw_m3"], existing)
+    assert entries[0]["MODEL"] == "alfa"
+    assert entries[1]["MODEL"] == "bmw_m3"
+
+
+def test_merge_deleted_car_not_included() -> None:
+    existing = {"ferrari_458": {"SKIN": "red"}, "bmw_m3": {"SKIN": "white"}}
+    # bmw_m3 was deleted — only ferrari_458 remains
+    entries = merge_entry_list(["ferrari_458"], existing)
+    models = [e["MODEL"] for e in entries]
+    assert "bmw_m3" not in models
+    assert models == ["ferrari_458"]
+
+
+# ---------------------------------------------------------------------------
+# read_entry_list
+# ---------------------------------------------------------------------------
+
+
+def test_read_entry_list_returns_parsed_content() -> None:
+    mock_ssh = _make_mock_ssh()
+    sftp = mock_ssh.open_sftp.return_value
+    ini = b"[CAR_0]\nMODEL=ferrari_458\nSKIN=red\nBALLAST=50\n"
+    sftp.open.return_value = _sftp_file(ini)
+
+    with patch("ac_updater.ssh_client.paramiko.SSHClient", return_value=mock_ssh):
+        client = SshClient("h", "u")
+        client.connect()
+    result = client.read_entry_list("/home/acserver/ac-drift")
+
+    assert "ferrari_458" in result
+    assert result["ferrari_458"]["SKIN"] == "red"
+    assert result["ferrari_458"]["BALLAST"] == "50"
+
+
+def test_read_entry_list_returns_empty_dict_when_file_missing() -> None:
+    mock_ssh = _make_mock_ssh()
+    sftp = mock_ssh.open_sftp.return_value
+    sftp.open.side_effect = OSError("no such file")
+
+    with patch("ac_updater.ssh_client.paramiko.SSHClient", return_value=mock_ssh):
+        client = SshClient("h", "u")
+        client.connect()
+    assert client.read_entry_list("/home/acserver/ac-drift") == {}
 
 
 # ---------------------------------------------------------------------------
