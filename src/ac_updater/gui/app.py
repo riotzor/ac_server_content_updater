@@ -992,15 +992,10 @@ class _App(tk.Tk):
         if messagebox.askyesno(
             "Update Server Config",
             f"{len(deployed_cars)} car(s) were deployed to {server_label}.\n\n"
-            f"The server's entry_list.ini needs updating for them to appear in-game.\n\n"
-            f"Stop {service} and update the config now?",
+            f"Stop {service} and rebuild entry_list.ini from all cars currently on the server?",
             parent=self,
         ):
-            cars_with_skins = [
-                (name, _get_skin_for_car(self._install_dir, name))
-                for name in deployed_cars
-            ]
-            self._on_stop_and_update(server_name, server_label, service, cars_with_skins)
+            self._on_stop_and_update(server_name, server_label, service)
         else:
             self._ssh_deploy_btn.state(["!disabled"])
 
@@ -1009,7 +1004,6 @@ class _App(tk.Tk):
         server_name: str,
         server_label: str,
         service: str,
-        cars_with_skins: list[tuple[str, str]],
     ) -> None:
         client = self._ssh_client
         if client is None:
@@ -1017,9 +1011,7 @@ class _App(tk.Tk):
             return
         server_dir = f"{_AC_HOME}/{server_name}"
         self._start_progress(f"Stopping {service}…")
-        log.info(
-            "Stopping %s and updating entry_list.ini: %d car(s)", service, len(cars_with_skins)
-        )
+        log.info("Stopping %s and rebuilding entry_list.ini", service)
 
         def _worker() -> None:
             stopped = False
@@ -1039,16 +1031,21 @@ class _App(tk.Tk):
 
             if stopped:
                 try:
-                    client.update_entry_list(server_dir, cars_with_skins)
+                    all_cars = client.list_server_cars(server_dir)
+                    cars_with_skins = [
+                        (car, _get_skin_for_car(self._install_dir, car))
+                        for car in all_cars
+                    ]
+                    client.write_entry_list(server_dir, cars_with_skins)
                     updated = True
                     ts2 = datetime.now().strftime("%H:%M:%S")
                     n = len(cars_with_skins)
                     self.after(0, lambda: self._append_server_result(
-                        f"[{ts2}]  entry_list.ini updated ({n} car(s) added)", "ok"
+                        f"[{ts2}]  entry_list.ini rebuilt ({n} car(s))", "ok"
                     ))
                 except Exception as exc:
-                    error = f"Failed to update entry_list.ini: {exc}"
-                    log.error("entry_list update failed: %s", exc)
+                    error = f"Failed to rebuild entry_list.ini: {exc}"
+                    log.error("entry_list rebuild failed: %s", exc)
 
             self.after(0, self._stop_progress)
             self.after(0, lambda: self._on_post_deploy_done(service, stopped, updated, error))
@@ -1068,7 +1065,7 @@ class _App(tk.Tk):
             self._set_status(error, _RED)
         elif stopped and updated:
             self._set_status(
-                f"Done — {service} stopped and entry_list.ini updated", _GREEN
+                f"Done — {service} stopped and entry_list.ini rebuilt", _GREEN
             )
         elif stopped:
             self._set_status(f"{service} stopped (entry_list.ini not updated)", _ORANGE)
