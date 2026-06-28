@@ -313,11 +313,10 @@ class SshClient:
             return None
 
         current = int(match.group(1))
-        if car_count <= current:
-            log.debug("MAX_CLIENTS=%d >= car_count=%d, no change needed", current, car_count)
-            return None
-
         new_value = car_count + 5
+        if new_value == current:
+            log.debug("MAX_CLIENTS already %d, no change needed", current)
+            return None
         new_content = re.sub(
             r"(?im)^(MAX_CLIENTS\s*=\s*)\d+",
             lambda m: m.group(1) + str(new_value),

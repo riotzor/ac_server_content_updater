@@ -1198,7 +1198,7 @@ def test_ensure_capacity_writes_new_value_to_cfg() -> None:
     assert "MAX_CLIENTS=25" in written
 
 
-def test_ensure_capacity_noop_when_car_count_within_limit() -> None:
+def test_ensure_capacity_shrinks_when_car_count_falls_below_max() -> None:
     mock_ssh = _make_mock_ssh()
     _apply_cfg_sftp(mock_ssh.open_sftp.return_value, _SERVER_CFG)
 
@@ -1206,12 +1206,12 @@ def test_ensure_capacity_noop_when_car_count_within_limit() -> None:
         client = SshClient("h", "u")
         client.connect()
 
-    result = client.ensure_capacity("/srv/ac", car_count=10)
+    result = client.ensure_capacity("/srv/ac", car_count=5)
 
-    assert result is None
+    assert result == 10  # 5 cars + 5
 
 
-def test_ensure_capacity_noop_when_car_count_equals_max() -> None:
+def test_ensure_capacity_updates_when_car_count_plus_five_differs_from_current() -> None:
     mock_ssh = _make_mock_ssh()
     _apply_cfg_sftp(mock_ssh.open_sftp.return_value, _SERVER_CFG)
 
@@ -1219,7 +1219,23 @@ def test_ensure_capacity_noop_when_car_count_equals_max() -> None:
         client = SshClient("h", "u")
         client.connect()
 
+    # current MAX_CLIENTS=16; car_count=16 → new_value=21 ≠ 16 → update
     result = client.ensure_capacity("/srv/ac", car_count=16)
+
+    assert result == 21
+
+
+def test_ensure_capacity_noop_when_already_at_car_count_plus_five() -> None:
+    # MAX_CLIENTS=16, car_count=11 → new_value=16 == current → no write
+    cfg = "[SERVER]\nMAX_CLIENTS=16\n"
+    mock_ssh = _make_mock_ssh()
+    _apply_cfg_sftp(mock_ssh.open_sftp.return_value, cfg)
+
+    with patch("ac_updater.ssh_client.paramiko.SSHClient", return_value=mock_ssh):
+        client = SshClient("h", "u")
+        client.connect()
+
+    result = client.ensure_capacity("/srv/ac", car_count=11)
 
     assert result is None
 

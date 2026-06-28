@@ -1686,6 +1686,13 @@ class _App(tk.Tk):
                     self.after(0, lambda: self._append_server_result(
                         f"[{ts}]  entry_list.ini rebuilt ({n} car(s))", "ok"
                     ))
+                    new_max = client.ensure_capacity(server_dir, n)
+                    if new_max is not None:
+                        ts_cap = datetime.now().strftime("%H:%M:%S")
+                        self.after(0, lambda: self._append_server_result(
+                            f"[{ts_cap}]  MAX_CLIENTS updated to {new_max} ({n} cars + 5)",
+                            "ok",
+                        ))
                 except Exception as exc:
                     error = f"Failed to rebuild entry_list.ini: {exc}"
 
