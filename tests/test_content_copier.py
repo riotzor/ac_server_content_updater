@@ -22,9 +22,9 @@ def _make_ac_tree(root: Path) -> Path:
     (content / "tracks" / "spa" / "modes.ini").write_text("modes", encoding="utf-8")
 
     # ks_vallunga — multi-layout track
+    # models_<layout>.ini files sit at the track root; layout dirs hold surfaces.ini
     vallunga = content / "tracks" / "ks_vallunga"
     for layout in ("classic_circuit", "club_circuit", "extended_circuit"):
-        (vallunga / f"models_{layout}").mkdir(parents=True)
         (vallunga / layout / "data").mkdir(parents=True)
         (vallunga / f"models_{layout}.ini").write_text(f"model={layout}", encoding="utf-8")
         (vallunga / layout / "data" / "surfaces.ini").write_text("surfaces", encoding="utf-8")

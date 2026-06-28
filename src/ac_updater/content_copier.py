@@ -22,16 +22,16 @@ class CopyResult:
 def detect_track_layouts(install_dir: Path, track_name: str) -> list[str]:
     """Return sorted layout names for a multi-layout track.
 
-    A multi-layout track has subdirectories named ``models_<layout>`` inside
-    its track folder.  Returns an empty list for single-layout tracks or if
+    A multi-layout track has files named ``models_<layout>.ini`` at the root
+    of its track folder.  Returns an empty list for single-layout tracks or if
     the track directory cannot be read.
     """
     track_dir = install_dir / "content" / "tracks" / track_name
     layouts: list[str] = []
     try:
         for entry in track_dir.iterdir():
-            if entry.is_dir() and entry.name.startswith("models_"):
-                layouts.append(entry.name[len("models_"):])
+            if entry.is_file() and entry.suffix == ".ini" and entry.stem.startswith("models_"):
+                layouts.append(entry.stem[len("models_"):])
     except OSError:
         pass
     return sorted(layouts)
