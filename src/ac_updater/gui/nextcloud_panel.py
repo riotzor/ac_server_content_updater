@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 import tkinter as tk
 from pathlib import Path
@@ -10,6 +11,8 @@ from urllib.parse import urlparse
 
 from ac_updater.nextcloud_client import NextcloudClient, NextcloudError, RemoteFile
 from ac_updater.nextcloud_config import load_credentials, save_credentials
+
+log = logging.getLogger(__name__)
 
 _GREEN = "#27ae60"
 _RED = "#c0392b"
@@ -81,8 +84,10 @@ class _ConnectDialog(tk.Toplevel):
         client = self._make_client()
         if client is None:
             return
-        scheme = urlparse(self._url_var.get().strip()).scheme.lower()
+        url = self._url_var.get().strip()
+        scheme = urlparse(url).scheme.lower()
         if scheme != "https":
+            log.warning("Connection test requested over non-HTTPS URL: %s", url)
             if not messagebox.askyesno(
                 "Insecure connection",
                 "The URL does not use HTTPS.\n\n"
@@ -92,6 +97,7 @@ class _ConnectDialog(tk.Toplevel):
                 parent=self,
             ):
                 return
+        log.info("Testing Nextcloud connection: %s", url)
         self._status_var.set("Testing connection…")
         self._status_lbl.configure(foreground="gray")
         self._connect_btn.state(["disabled"])
@@ -99,10 +105,12 @@ class _ConnectDialog(tk.Toplevel):
         def _check() -> None:
             ok = client.test_connection()
             if ok:
+                log.info("Nextcloud connection test succeeded")
                 self.after(0, lambda: self._status_var.set("Connected ✓"))
                 self.after(0, lambda: self._status_lbl.configure(foreground=_GREEN))
                 self.after(0, lambda: self._connect_btn.state(["!disabled"]))
             else:
+                log.warning("Nextcloud connection test failed")
                 self.after(0, lambda: self._status_var.set("Failed — check URL and credentials"))
                 self.after(0, lambda: self._status_lbl.configure(foreground=_RED))
 
@@ -112,11 +120,10 @@ class _ConnectDialog(tk.Toplevel):
         client = self._make_client()
         if client is None:
             return
-        save_credentials(
-            self._url_var.get().strip(),
-            self._user_var.get().strip(),
-            self._pass_var.get(),
-        )
+        url = self._url_var.get().strip()
+        username = self._user_var.get().strip()
+        save_credentials(url, username, self._pass_var.get())
+        log.info("Nextcloud credentials saved and client connected: user='%s'", username)
         self.result = client
         self.destroy()
 
@@ -290,15 +297,18 @@ class _FileBrowserDialog(tk.Toplevel):
         if not name:
             return
         remote = f"{self._current_path}/{name}".lstrip("/")
+        log.info("Creating remote directory: %s", remote)
         self._set_status("Creating…", _ORANGE)
 
         def _do() -> None:
             try:
                 self._client.create_directory(remote)
+                log.info("Directory created: %s", remote)
                 self.after(0, lambda: self._set_status(f"Created '{name}'", _GREEN))
                 self.after(0, self._refresh)
             except NextcloudError as exc:
                 err = str(exc)
+                log.error("Failed to create directory '%s': %s", remote, exc)
                 self.after(0, lambda: self._set_status(f"Error: {err}", _RED))
 
         threading.Thread(target=_do, daemon=True).start()
@@ -319,13 +329,17 @@ class _FileBrowserDialog(tk.Toplevel):
 
         current_path = f.path
 
+        log.info("Renaming: %s  →  %s", current_path, new_path)
+
         def _do() -> None:
             try:
                 self._client.rename(current_path, new_path)
+                log.info("Renamed: %s  →  %s", current_path, new_path)
                 self.after(0, lambda: self._set_status(f"Renamed to '{new_name}'", _GREEN))
                 self.after(0, self._refresh)
             except NextcloudError as exc:
                 err = str(exc)
+                log.error("Rename failed (%s → %s): %s", current_path, new_path, exc)
                 self.after(0, lambda: self._set_status(f"Error: {err}", _RED))
 
         threading.Thread(target=_do, daemon=True).start()
@@ -341,6 +355,7 @@ class _FileBrowserDialog(tk.Toplevel):
             parent=self,
         ):
             return
+        log.info("Deleting remote item: %s", f.path)
         self._set_status("Deleting…", _ORANGE)
         target = f.path
         name = f.name
@@ -348,10 +363,12 @@ class _FileBrowserDialog(tk.Toplevel):
         def _do() -> None:
             try:
                 self._client.delete(target)
+                log.info("Deleted: %s", target)
                 self.after(0, lambda: self._set_status(f"Deleted '{name}'", _GREEN))
                 self.after(0, self._refresh)
             except NextcloudError as exc:
                 err = str(exc)
+                log.error("Delete failed (%s): %s", target, exc)
                 self.after(0, lambda: self._set_status(f"Error: {err}", _RED))
 
         threading.Thread(target=_do, daemon=True).start()
@@ -362,6 +379,7 @@ class _FileBrowserDialog(tk.Toplevel):
         archive_path = self._archive_path
         archive_name = self._upload_name_var.get().strip() or self._archive_name
         remote = f"{self._current_path}/{archive_name}".lstrip("/")
+        log.info("Upload initiated: local=%s  remote=%s", archive_path, remote)
         self._set_status(f"Uploading {archive_name}…", _ORANGE)
         self._upload_btn.state(["disabled"])
 
@@ -369,10 +387,12 @@ class _FileBrowserDialog(tk.Toplevel):
             try:
                 self._client.upload_file(archive_path, remote)
                 self.upload_successful = True
+                log.info("Upload succeeded: %s", remote)
                 self.after(0, lambda: self._set_status(f"Uploaded ✓  →  /{remote}", _GREEN))
                 self.after(0, self._refresh)
             except (NextcloudError, OSError) as exc:
                 err = str(exc)
+                log.error("Upload failed: %s", exc)
                 self.after(0, lambda: self._set_status(f"Upload failed: {err}", _RED))
                 self.after(0, lambda: self._upload_btn.state(["!disabled"]))
 

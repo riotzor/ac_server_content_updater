@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import logging
 import shutil
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+
+log = logging.getLogger(__name__)
 
 _CAR_FILES: tuple[str, ...] = ("data.acd",)
 _TRACK_FILES: tuple[str, ...] = ("modes.ini", "data/surfaces.ini")
@@ -34,6 +37,10 @@ def copy_to_share(
     """
     result = CopyResult()
     content_dir = install_dir / "content"
+    total_items = sum(len(v) for v in selection.values())
+    log.info(
+        "Starting server content copy: share=%s  items=%d", share_path, total_items
+    )
 
     for car in selection.get("cars", []):
         for rel in _CAR_FILES:
@@ -53,6 +60,12 @@ def copy_to_share(
                 copy2=_copy2,
             )
 
+    log.info(
+        "Copy complete: copied=%d  skipped=%d  errors=%d",
+        result.copied, result.skipped, len(result.errors),
+    )
+    for err in result.errors:
+        log.error("Copy error: %s", err)
     return result
 
 
@@ -63,11 +76,14 @@ def _copy_file(
     copy2: Callable[[Path, Path], object],
 ) -> None:
     if not src.exists():
+        log.debug("Skipped (not found): %s", src)
         result.skipped += 1
         return
     try:
         dst.parent.mkdir(parents=True, exist_ok=True)
         copy2(src, dst)
+        log.debug("Copied: %s  →  %s", src, dst)
         result.copied += 1
     except OSError as exc:
+        log.error("Failed to copy %s → %s: %s", src, dst, exc)
         result.errors.append(f"{src.name}: {exc}")

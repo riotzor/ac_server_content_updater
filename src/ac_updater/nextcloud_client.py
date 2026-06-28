@@ -7,6 +7,7 @@ exception-based error handling.
 
 from __future__ import annotations
 
+import logging
 import uuid
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
@@ -15,6 +16,8 @@ from urllib.parse import unquote, urlparse
 
 import requests
 from requests.auth import HTTPBasicAuth
+
+log = logging.getLogger(__name__)
 
 _DAV = "DAV:"
 _CHUNK_SIZE = 10 * 1024 * 1024  # 10 MB — stays under Cloudflare's body-size limits
@@ -46,6 +49,7 @@ class NextcloudClient:
         self._dav_base = f"{base}/remote.php/dav/files/{username}/"
         self._uploads_base = f"{base}/remote.php/dav/uploads/{username}/"
         self._auth = HTTPBasicAuth(username, password)
+        log.debug("NextcloudClient initialised for user '%s' at %s", username, base)
 
     def _url(self, remote_path: str = "") -> str:
         return self._dav_base + remote_path.lstrip("/")
@@ -56,6 +60,7 @@ class NextcloudClient:
 
     def test_connection(self) -> bool:
         """Return True if credentials are valid and the server is reachable."""
+        log.info("Testing connection to %s as '%s'", self._dav_base, self._username)
         try:
             resp = requests.request(
                 "PROPFIND",
@@ -64,8 +69,12 @@ class NextcloudClient:
                 auth=self._auth,
                 timeout=10,
             )
-            return resp.status_code == 207
-        except requests.RequestException:
+            ok = resp.status_code == 207
+            outcome = "OK" if ok else "FAILED"
+            log.info("Connection test result: %s (HTTP %d)", outcome, resp.status_code)
+            return ok
+        except requests.RequestException as exc:
+            log.warning("Connection test failed with network error: %s", exc)
             return False
 
     # ------------------------------------------------------------------
@@ -74,6 +83,7 @@ class NextcloudClient:
 
     def list_files(self, remote_path: str = "") -> list[RemoteFile]:
         """Return files and folders at remote_path, sorted dirs-first."""
+        log.debug("PROPFIND %s", self._url(remote_path))
         resp = requests.request(
             "PROPFIND",
             self._url(remote_path),
@@ -81,13 +91,16 @@ class NextcloudClient:
             auth=self._auth,
             timeout=30,
         )
+        log.debug("PROPFIND → HTTP %d", resp.status_code)
         if resp.status_code == 401:
             raise NextcloudError("Authentication failed — check credentials")
         if resp.status_code == 404:
             raise NextcloudError(f"Path not found: {remote_path!r}")
         if resp.status_code != 207:
             raise NextcloudError(f"List failed ({resp.status_code})")
-        return _parse_propfind(resp.text, self._dav_base)
+        files = _parse_propfind(resp.text, self._dav_base)
+        log.debug("Listed %d entries at '%s'", len(files), remote_path or "/")
+        return files
 
     # ------------------------------------------------------------------
     # Create
@@ -99,22 +112,33 @@ class NextcloudClient:
         Files larger than _CHUNK_SIZE use Nextcloud's chunked-upload protocol
         so that no single HTTP body exceeds proxy size limits (e.g. Cloudflare).
         """
+        file_size = local_path.stat().st_size
+        log.info(
+            "Upload: %s  →  %s  (%.1f MB, %s)",
+            local_path.name, remote_path,
+            file_size / (1024 * 1024),
+            "chunked" if file_size > _CHUNK_SIZE else "single PUT",
+        )
         parent = "/".join(remote_path.lstrip("/").split("/")[:-1])
         if parent:
             self._ensure_dirs(parent)
-        if local_path.stat().st_size > _CHUNK_SIZE:
+        if file_size > _CHUNK_SIZE:
             self._upload_chunked(local_path, remote_path)
         else:
             self._upload_single(local_path, remote_path)
+        log.info("Upload complete: %s", remote_path)
 
     def _upload_single(self, local_path: Path, remote_path: str) -> None:
+        log.debug("PUT %s", self._url(remote_path))
         resp = requests.put(
             self._url(remote_path),
             data=local_path.open("rb"),
             auth=self._auth,
             timeout=600,
         )
+        log.debug("PUT → HTTP %d", resp.status_code)
         if resp.status_code not in (200, 201, 204):
+            log.error("Upload failed: HTTP %d — %s", resp.status_code, resp.text[:300])
             raise NextcloudError(f"Upload failed ({resp.status_code}): {resp.text[:300]}")
 
     def _upload_chunked(self, local_path: Path, remote_path: str) -> None:
@@ -127,26 +151,35 @@ class NextcloudClient:
         """
         transfer_id = uuid.uuid4().hex
         upload_dir = f"{self._uploads_base}{transfer_id}/"
+        file_size = local_path.stat().st_size
+        log.debug("Chunked upload: transfer_id=%s  total_size=%d", transfer_id, file_size)
 
         resp = requests.request("MKCOL", upload_dir, auth=self._auth, timeout=30)
+        log.debug("MKCOL upload session → HTTP %d", resp.status_code)
         if resp.status_code not in (201, 405):
             raise NextcloudError(f"Could not create upload session ({resp.status_code})")
 
-        file_size = local_path.stat().st_size
         with local_path.open("rb") as fh:
             offset = 0
+            chunk_num = 0
             while True:
                 chunk = fh.read(_CHUNK_SIZE)
                 if not chunk:
                     break
                 chunk_url = f"{upload_dir}{offset}"
+                log.debug(
+                    "PUT chunk %d: offset=%d  size=%d", chunk_num, offset, len(chunk)
+                )
                 resp = requests.put(chunk_url, data=chunk, auth=self._auth, timeout=300)
+                log.debug("PUT chunk %d → HTTP %d", chunk_num, resp.status_code)
                 if resp.status_code not in (200, 201, 204):
                     raise NextcloudError(
                         f"Chunk upload failed at offset {offset} ({resp.status_code})"
                     )
                 offset += len(chunk)
+                chunk_num += 1
 
+        log.debug("MOVE to assemble chunks at %s", remote_path)
         resp = requests.request(
             "MOVE",
             f"{upload_dir}.file",
@@ -157,19 +190,26 @@ class NextcloudClient:
             auth=self._auth,
             timeout=60,
         )
+        log.debug("MOVE assembly → HTTP %d", resp.status_code)
         if resp.status_code not in (200, 201, 204):
+            log.error(
+                "Chunked upload assembly failed: HTTP %d — %s",
+                resp.status_code, resp.text[:300],
+            )
             raise NextcloudError(
                 f"Chunked upload assembly failed ({resp.status_code}): {resp.text[:300]}"
             )
 
     def create_directory(self, remote_path: str) -> None:
         """Create a remote directory (no-op if it already exists)."""
+        log.debug("MKCOL %s", self._url(remote_path))
         resp = requests.request(
             "MKCOL",
             self._url(remote_path),
             auth=self._auth,
             timeout=15,
         )
+        log.debug("MKCOL → HTTP %d", resp.status_code)
         if resp.status_code not in (201, 405):  # 405 = already exists
             raise NextcloudError(f"Create directory failed ({resp.status_code})")
 
@@ -179,6 +219,7 @@ class NextcloudClient:
 
     def rename(self, current_path: str, new_path: str) -> None:
         """Rename or move a remote file or folder."""
+        log.info("MOVE %s  →  %s", current_path, new_path)
         resp = requests.request(
             "MOVE",
             self._url(current_path),
@@ -186,7 +227,9 @@ class NextcloudClient:
             auth=self._auth,
             timeout=30,
         )
+        log.debug("MOVE → HTTP %d", resp.status_code)
         if resp.status_code not in (201, 204):
+            log.error("Rename failed: HTTP %d", resp.status_code)
             raise NextcloudError(f"Rename failed ({resp.status_code}): {resp.text[:200]}")
 
     # ------------------------------------------------------------------
@@ -195,13 +238,16 @@ class NextcloudClient:
 
     def delete(self, remote_path: str) -> None:
         """Delete a remote file or directory (recursive for directories)."""
+        log.info("DELETE %s", remote_path)
         resp = requests.request(
             "DELETE",
             self._url(remote_path),
             auth=self._auth,
             timeout=30,
         )
+        log.debug("DELETE → HTTP %d", resp.status_code)
         if resp.status_code not in (200, 204):
+            log.error("Delete failed: HTTP %d", resp.status_code)
             raise NextcloudError(f"Delete failed ({resp.status_code}): {resp.text[:200]}")
 
     # ------------------------------------------------------------------

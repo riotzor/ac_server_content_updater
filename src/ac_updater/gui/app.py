@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import subprocess
 import tempfile
@@ -8,6 +9,7 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
+from ac_updater._logging import setup_logging
 from ac_updater.ac_finder import find_ac_install
 from ac_updater.archiver import create_archive
 from ac_updater.content_copier import CopyResult, copy_to_share
@@ -16,6 +18,8 @@ from ac_updater.gui.nextcloud_panel import open_connect_dialog, open_file_browse
 from ac_updater.nextcloud_client import NextcloudClient
 from ac_updater.selection_store import save_selection
 from ac_updater.share_config import load_share_path, save_share_path
+
+log = logging.getLogger(__name__)
 
 _SELECTION_FILE = Path("selections") / "selection.txt"
 _WINDOW_TITLE = "AC Server Content Updater"
@@ -82,6 +86,8 @@ class _App(tk.Tk):
         self._share_path = load_share_path()
         self._nc_client: NextcloudClient | None = None
         self._panels: dict[str, _ChecklistPanel] = {}
+
+        log.info("App window created: install_dir=%s  share=%s", install_dir, self._share_path)
 
         self._build_header()
         self._panel_area = ttk.Frame(self, padding=(10, 0, 10, 0))
@@ -179,6 +185,7 @@ class _App(tk.Tk):
         if not chosen:
             return
         new_dir = Path(chosen)
+        log.info("User changed AC install dir: %s  →  %s", self._install_dir, new_dir)
         self._install_dir = new_dir
         self._install_path_label.configure(text=str(new_dir))
         for panel in self._panels.values():
@@ -196,9 +203,11 @@ class _App(tk.Tk):
         )
         if not new or not new.strip():
             return
+        old = self._share_path
         self._share_path = Path(new.strip())
         self._share_path_label.configure(text=str(self._share_path))
         save_share_path(self._share_path)
+        log.info("User changed share path: %s  →  %s", old, self._share_path)
         self._set_status(f"Share path updated → {self._share_path}", _GREEN)
 
     # ------------------------------------------------------------------
@@ -207,11 +216,13 @@ class _App(tk.Tk):
 
     def _on_save(self) -> None:
         selection = {cat: panel.get_selected() for cat, panel in self._panels.items()}
+        total = sum(len(v) for v in selection.values())
+        log.info("Saving selection: %d items", total)
         try:
             save_selection(_SELECTION_FILE, selection)
-            total = sum(len(v) for v in selection.values())
             self._set_status(f"Saved {total} items → {_SELECTION_FILE}", _GREEN)
         except OSError as exc:
+            log.error("Failed to save selection: %s", exc)
             messagebox.showerror("Save failed", str(exc))
 
     def _get_selection(self) -> dict[str, list[str]] | None:
@@ -237,6 +248,7 @@ class _App(tk.Tk):
 
         output_path = Path(output_str)
         install_dir = self._install_dir
+        log.info("Create Archive initiated: output=%s", output_path)
         self._start_progress("Creating archive…")
         self._disable_buttons()
 
@@ -247,11 +259,13 @@ class _App(tk.Tk):
                 self.after(0, lambda: self._set_status(f"Archive saved → {output_path}", _GREEN))
             except FileNotFoundError as exc:
                 err = str(exc)
+                log.error("Create Archive failed — 7-Zip not found: %s", exc)
                 self.after(0, self._stop_progress)
                 self.after(0, lambda: messagebox.showerror("7-Zip not found", err))
                 self.after(0, lambda: self._set_status("Archive failed — 7-Zip not found", _RED))
             except subprocess.CalledProcessError as exc:
                 msg = f"7-Zip exited with code {exc.returncode}"
+                log.error("Create Archive failed: %s", msg)
                 self.after(0, self._stop_progress)
                 self.after(0, lambda: messagebox.showerror("Archive failed", msg))
                 self.after(0, lambda: self._set_status("Archive failed", _RED))
@@ -266,17 +280,25 @@ class _App(tk.Tk):
             return
 
         if self._nc_client is None:
+            log.info("No Nextcloud client — opening connection dialog")
             self._nc_client = open_connect_dialog(self)
         if self._nc_client is None:
+            log.info("Nextcloud connect dialog cancelled")
             return
 
         install_dir = self._install_dir
         nc_client = self._nc_client
         default_name = _default_archive_name(selection)
+
+        # mkstemp atomically creates a unique file; unlink so 7-zip creates the archive fresh
         _fd, _tmp = tempfile.mkstemp(suffix=".7z")
         os.close(_fd)
+        os.unlink(_tmp)
         tmp_path = Path(_tmp)
 
+        log.info(
+            "Create & Upload initiated: tmp=%s  default_name=%s", tmp_path, default_name
+        )
         self._start_progress("Creating archive…")
         self._disable_buttons()
 
@@ -286,12 +308,14 @@ class _App(tk.Tk):
                 self.after(0, lambda: self._on_archive_ready(nc_client, tmp_path, default_name))
             except FileNotFoundError as exc:
                 err = str(exc)
+                log.error("Create & Upload — archive failed (7-Zip not found): %s", exc)
                 self.after(0, self._stop_progress)
                 self.after(0, lambda: messagebox.showerror("7-Zip not found", err))
                 self.after(0, lambda: self._set_status("Archive failed — 7-Zip not found", _RED))
                 self.after(0, self._enable_buttons)
             except subprocess.CalledProcessError as exc:
                 msg = f"7-Zip exited with code {exc.returncode}"
+                log.error("Create & Upload — archive failed: %s", msg)
                 self.after(0, self._stop_progress)
                 self.after(0, lambda: messagebox.showerror("Archive failed", msg))
                 self.after(0, lambda: self._set_status("Archive failed", _RED))
@@ -303,18 +327,22 @@ class _App(tk.Tk):
         self, nc_client: NextcloudClient, tmp_path: Path, archive_name: str
     ) -> None:
         self._stop_progress()
+        log.info("Archive ready for upload: %s  (as '%s')", tmp_path, archive_name)
         self._set_status("Archive ready — select upload destination…", _ORANGE)
         uploaded = open_file_browser(
             self, nc_client, archive_path=tmp_path, archive_name=archive_name
         )
         if uploaded:
+            log.info("Upload completed successfully")
             self._set_status("Upload complete", _GREEN)
         else:
+            log.info("Upload cancelled by user")
             self._set_status("Upload cancelled", "gray")
         try:
             tmp_path.unlink(missing_ok=True)
-        except OSError:
-            pass
+            log.debug("Temp archive cleaned up: %s", tmp_path)
+        except OSError as exc:
+            log.warning("Could not clean up temp archive %s: %s", tmp_path, exc)
         self._enable_buttons()
 
     def _on_server_update(self) -> None:
@@ -324,6 +352,7 @@ class _App(tk.Tk):
 
         install_dir = self._install_dir
         share_path = self._share_path
+        log.info("Server Content Update initiated: share=%s", share_path)
         self._start_progress(f"Copying to {share_path}…")
         self._disable_buttons()
 
@@ -364,8 +393,12 @@ def _default_archive_name(selection: dict[str, list[str]]) -> str:
 
 
 def run() -> None:
+    setup_logging()
+    log.info("run() called")
+
     install_dir = find_ac_install()
     if install_dir is None:
+        log.info("AC install not auto-detected — prompting user")
         root = tk.Tk()
         root.withdraw()
         chosen = filedialog.askdirectory(
@@ -373,9 +406,16 @@ def run() -> None:
         )
         root.destroy()
         if not chosen:
+            log.info("User cancelled install dir selection — exiting")
             return
         install_dir = Path(chosen)
 
+    log.info("AC install dir: %s", install_dir)
     content = scan_content(install_dir)
+    log.info(
+        "Content scan: %s",
+        "  ".join(f"{cat}={len(items)}" for cat, items in content.items()),
+    )
     app = _App(install_dir, content)
     app.mainloop()
+    log.info("App exited")
