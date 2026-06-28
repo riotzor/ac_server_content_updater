@@ -103,7 +103,7 @@ class _LayoutPickerDialog(tk.Toplevel):
 
     def __init__(
         self,
-        parent: tk.Widget,
+        parent: tk.Misc,
         track_layouts: dict[str, list[str]],
     ) -> None:
         super().__init__(parent)
