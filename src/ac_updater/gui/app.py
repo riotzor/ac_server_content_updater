@@ -5,18 +5,20 @@ import tempfile
 import threading
 import tkinter as tk
 from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox, simpledialog, ttk
 
 from ac_updater.ac_finder import find_ac_install
 from ac_updater.archiver import create_archive
+from ac_updater.content_copier import CopyResult, copy_to_share
 from ac_updater.content_scanner import scan_content
 from ac_updater.gui.nextcloud_panel import open_connect_dialog, open_file_browser
 from ac_updater.nextcloud_client import NextcloudClient
 from ac_updater.selection_store import save_selection
+from ac_updater.share_config import load_share_path, save_share_path
 
 _SELECTION_FILE = Path("selections") / "selection.txt"
 _WINDOW_TITLE = "AC Server Content Updater"
-_WINDOW_SIZE = "980x640"
+_WINDOW_SIZE = "1060x640"
 
 _GREEN = "#27ae60"
 _RED = "#c0392b"
@@ -76,10 +78,11 @@ class _App(tk.Tk):
         self.geometry(_WINDOW_SIZE)
         self.resizable(True, True)
         self._install_dir = install_dir
-        self._panels: dict[str, _ChecklistPanel] = {}
+        self._share_path = load_share_path()
         self._nc_client: NextcloudClient | None = None
+        self._panels: dict[str, _ChecklistPanel] = {}
 
-        self._build_header(install_dir)
+        self._build_header()
         self._panel_area = ttk.Frame(self, padding=(10, 0, 10, 0))
         self._panel_area.pack(fill="both", expand=True)
         self._build_panels(content)
@@ -89,13 +92,23 @@ class _App(tk.Tk):
     # Layout builders
     # ------------------------------------------------------------------
 
-    def _build_header(self, install_dir: Path) -> None:
+    def _build_header(self) -> None:
         header = ttk.Frame(self, padding=(10, 8))
         header.pack(fill="x")
+
         ttk.Label(header, text="AC Install:", font=("", 9, "bold")).pack(side="left")
-        self._install_path_label = ttk.Label(header, text=str(install_dir))
-        self._install_path_label.pack(side="left", padx=(6, 12))
-        ttk.Button(header, text="Change...", command=self._on_change_dir).pack(side="left")
+        self._install_path_label = ttk.Label(header, text=str(self._install_dir))
+        self._install_path_label.pack(side="left", padx=(6, 4))
+        ttk.Button(header, text="Change...", command=self._on_change_dir).pack(
+            side="left", padx=(0, 16)
+        )
+
+        ttk.Separator(header, orient="vertical").pack(side="left", fill="y", padx=(0, 16))
+
+        ttk.Label(header, text="Share:", font=("", 9, "bold")).pack(side="left")
+        self._share_path_label = ttk.Label(header, text=str(self._share_path))
+        self._share_path_label.pack(side="left", padx=(6, 4))
+        ttk.Button(header, text="Change...", command=self._on_change_share).pack(side="left")
 
     def _build_panels(self, content: dict[str, list[str]]) -> None:
         for category, items in content.items():
@@ -107,15 +120,12 @@ class _App(tk.Tk):
         footer = ttk.Frame(self, padding=(10, 6))
         footer.pack(fill="x", side="bottom")
 
-        # Status label (left)
         self._status_var = tk.StringVar()
         self._status_label = ttk.Label(footer, textvariable=self._status_var, foreground="gray")
         self._status_label.pack(side="left")
 
-        # Indeterminate progress bar (hidden until an operation starts)
         self._progress = ttk.Progressbar(footer, mode="indeterminate", length=160)
 
-        # Buttons (right, declared right-to-left so they appear left-to-right)
         ttk.Button(footer, text="Save Selection", command=self._on_save).pack(
             side="right", padx=(6, 0)
         )
@@ -126,7 +136,11 @@ class _App(tk.Tk):
         self._upload_btn = ttk.Button(
             footer, text="Create & Upload to Nextcloud", command=self._on_create_upload
         )
-        self._upload_btn.pack(side="right")
+        self._upload_btn.pack(side="right", padx=(6, 0))
+        self._server_btn = ttk.Button(
+            footer, text="Server Content Update", command=self._on_server_update
+        )
+        self._server_btn.pack(side="right")
 
     # ------------------------------------------------------------------
     # Status / progress helpers
@@ -145,8 +159,16 @@ class _App(tk.Tk):
         self._progress.stop()
         self._progress.pack_forget()
 
+    def _disable_buttons(self) -> None:
+        for btn in (self._archive_btn, self._upload_btn, self._server_btn):
+            btn.state(["disabled"])
+
+    def _enable_buttons(self) -> None:
+        for btn in (self._archive_btn, self._upload_btn, self._server_btn):
+            btn.state(["!disabled"])
+
     # ------------------------------------------------------------------
-    # Actions
+    # Actions — header
     # ------------------------------------------------------------------
 
     def _on_change_dir(self) -> None:
@@ -164,6 +186,24 @@ class _App(tk.Tk):
         self._build_panels(scan_content(new_dir))
         self._set_status(f"Loaded content from {new_dir}", _GREEN)
 
+    def _on_change_share(self) -> None:
+        new = simpledialog.askstring(
+            "Network Share",
+            "Enter the network share path:",
+            initialvalue=str(self._share_path),
+            parent=self,
+        )
+        if not new or not new.strip():
+            return
+        self._share_path = Path(new.strip())
+        self._share_path_label.configure(text=str(self._share_path))
+        save_share_path(self._share_path)
+        self._set_status(f"Share path updated → {self._share_path}", _GREEN)
+
+    # ------------------------------------------------------------------
+    # Actions — footer
+    # ------------------------------------------------------------------
+
     def _on_save(self) -> None:
         selection = {cat: panel.get_selected() for cat, panel in self._panels.items()}
         try:
@@ -177,7 +217,7 @@ class _App(tk.Tk):
         selection = {cat: panel.get_selected() for cat, panel in self._panels.items()}
         if not any(selection.values()):
             messagebox.showwarning(
-                "Nothing selected", "Tick at least one item before creating an archive."
+                "Nothing selected", "Tick at least one item before proceeding."
             )
             return None
         return selection
@@ -197,8 +237,7 @@ class _App(tk.Tk):
         output_path = Path(output_str)
         install_dir = self._install_dir
         self._start_progress("Creating archive…")
-        self._archive_btn.state(["disabled"])
-        self._upload_btn.state(["disabled"])
+        self._disable_buttons()
 
         def _worker() -> None:
             try:
@@ -216,8 +255,7 @@ class _App(tk.Tk):
                 self.after(0, lambda: messagebox.showerror("Archive failed", msg))
                 self.after(0, lambda: self._set_status("Archive failed", _RED))
             finally:
-                self.after(0, lambda: self._archive_btn.state(["!disabled"]))
-                self.after(0, lambda: self._upload_btn.state(["!disabled"]))
+                self.after(0, self._enable_buttons)
 
         threading.Thread(target=_worker, daemon=True).start()
 
@@ -226,56 +264,100 @@ class _App(tk.Tk):
         if selection is None:
             return
 
-        # Ensure we have a Nextcloud connection
         if self._nc_client is None:
             self._nc_client = open_connect_dialog(self)
         if self._nc_client is None:
-            return  # User cancelled
+            return
 
         install_dir = self._install_dir
         nc_client = self._nc_client
-
-        # Create archive in a temp file, then open file browser for upload
+        default_name = _default_archive_name(selection)
         tmp_path = Path(tempfile.mktemp(suffix=".7z"))
+
         self._start_progress("Creating archive…")
-        self._archive_btn.state(["disabled"])
-        self._upload_btn.state(["disabled"])
+        self._disable_buttons()
 
         def _worker() -> None:
             try:
                 create_archive(install_dir, selection, tmp_path)
-                self.after(0, lambda: self._on_archive_ready(nc_client, tmp_path))
+                self.after(0, lambda: self._on_archive_ready(nc_client, tmp_path, default_name))
             except FileNotFoundError as exc:
                 err = str(exc)
                 self.after(0, self._stop_progress)
                 self.after(0, lambda: messagebox.showerror("7-Zip not found", err))
                 self.after(0, lambda: self._set_status("Archive failed — 7-Zip not found", _RED))
-                self.after(0, lambda: self._archive_btn.state(["!disabled"]))
-                self.after(0, lambda: self._upload_btn.state(["!disabled"]))
+                self.after(0, self._enable_buttons)
             except subprocess.CalledProcessError as exc:
                 msg = f"7-Zip exited with code {exc.returncode}"
                 self.after(0, self._stop_progress)
                 self.after(0, lambda: messagebox.showerror("Archive failed", msg))
                 self.after(0, lambda: self._set_status("Archive failed", _RED))
-                self.after(0, lambda: self._archive_btn.state(["!disabled"]))
-                self.after(0, lambda: self._upload_btn.state(["!disabled"]))
+                self.after(0, self._enable_buttons)
 
         threading.Thread(target=_worker, daemon=True).start()
 
-    def _on_archive_ready(self, nc_client: NextcloudClient, tmp_path: Path) -> None:
+    def _on_archive_ready(
+        self, nc_client: NextcloudClient, tmp_path: Path, archive_name: str
+    ) -> None:
         self._stop_progress()
         self._set_status("Archive ready — select upload destination…", _ORANGE)
-        uploaded = open_file_browser(self, nc_client, archive_path=tmp_path)
+        uploaded = open_file_browser(
+            self, nc_client, archive_path=tmp_path, archive_name=archive_name
+        )
         if uploaded:
-            self._set_status("Upload complete ✓", _GREEN)
+            self._set_status("Upload complete", _GREEN)
         else:
             self._set_status("Upload cancelled", "gray")
         try:
             tmp_path.unlink(missing_ok=True)
         except OSError:
             pass
-        self._archive_btn.state(["!disabled"])
-        self._upload_btn.state(["!disabled"])
+        self._enable_buttons()
+
+    def _on_server_update(self) -> None:
+        selection = self._get_selection()
+        if selection is None:
+            return
+
+        install_dir = self._install_dir
+        share_path = self._share_path
+        self._start_progress(f"Copying to {share_path}…")
+        self._disable_buttons()
+
+        def _worker() -> None:
+            result = copy_to_share(install_dir, selection, share_path)
+            self.after(0, self._stop_progress)
+            self.after(0, lambda: self._on_copy_done(result, share_path))
+            self.after(0, self._enable_buttons)
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _on_copy_done(self, result: CopyResult, share_path: Path) -> None:
+        base = f"Copied {result.copied} file(s)"
+        if result.errors:
+            detail = "\n".join(result.errors[:15])
+            if len(result.errors) > 15:
+                detail += f"\n…and {len(result.errors) - 15} more"
+            messagebox.showerror("Copy errors", detail)
+            self._set_status(f"{base}, {len(result.errors)} error(s)", _RED)
+        elif result.skipped:
+            self._set_status(
+                f"{base} to {share_path} ({result.skipped} not found in AC install)", _ORANGE
+            )
+        else:
+            self._set_status(f"{base} to {share_path}", _GREEN)
+
+
+# ------------------------------------------------------------------
+# Helpers
+# ------------------------------------------------------------------
+
+
+def _default_archive_name(selection: dict[str, list[str]]) -> str:
+    non_empty = sorted(cat for cat, items in selection.items() if items)
+    if len(non_empty) == 1:
+        return f"{non_empty[0]}.7z"
+    return "content.7z"
 
 
 def run() -> None:

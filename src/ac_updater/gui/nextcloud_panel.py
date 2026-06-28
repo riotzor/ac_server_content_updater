@@ -120,12 +120,14 @@ class _FileBrowserDialog(tk.Toplevel):
         parent: tk.Misc,
         client: NextcloudClient,
         archive_path: Path | None = None,
+        archive_name: str | None = None,
     ) -> None:
         super().__init__(parent)
         self.title("Nextcloud Files")
-        self.geometry("740x500")
+        self.geometry("740x540")
         self._client = client
         self._archive_path = archive_path
+        self._archive_name = archive_name or (archive_path.name if archive_path else "upload.7z")
         self._current_path = ""
         self.upload_successful = False
         self._build()
@@ -178,15 +180,23 @@ class _FileBrowserDialog(tk.Toplevel):
         # Upload footer (only when an archive is being queued for upload)
         if self._archive_path:
             ttk.Separator(self, orient="horizontal").pack(fill="x")
-            up_frame = ttk.Frame(self, padding=(8, 6))
-            up_frame.pack(fill="x")
-            self._dest_var = tk.StringVar(value="Upload destination: /")
-            ttk.Label(up_frame, textvariable=self._dest_var).pack(side="left")
-            ttk.Button(up_frame, text="Cancel", command=self.destroy).pack(
+            dest_row = ttk.Frame(self, padding=(8, 4, 8, 0))
+            dest_row.pack(fill="x")
+            self._dest_var = tk.StringVar(value="Destination: /")
+            ttk.Label(dest_row, textvariable=self._dest_var, foreground="gray").pack(side="left")
+
+            name_row = ttk.Frame(self, padding=(8, 4, 8, 6))
+            name_row.pack(fill="x")
+            ttk.Label(name_row, text="Filename:").pack(side="left")
+            self._upload_name_var = tk.StringVar(value=self._archive_name)
+            ttk.Entry(name_row, textvariable=self._upload_name_var, width=28).pack(
+                side="left", padx=(6, 0)
+            )
+            ttk.Button(name_row, text="Cancel", command=self.destroy).pack(
                 side="right", padx=(6, 0)
             )
             self._upload_btn = ttk.Button(
-                up_frame, text="Upload Here", command=self._on_upload
+                name_row, text="Upload Here", command=self._on_upload
             )
             self._upload_btn.pack(side="right")
 
@@ -216,7 +226,7 @@ class _FileBrowserDialog(tk.Toplevel):
         display = f"/{self._current_path}"
         self._path_var.set(display)
         if self._archive_path:
-            self._dest_var.set(f"Upload destination: {display}")
+            self._dest_var.set(f"Destination: {display}")
 
     # ------------------------------------------------------------------
     # Navigation
@@ -338,7 +348,7 @@ class _FileBrowserDialog(tk.Toplevel):
         if not self._archive_path:
             return
         archive_path = self._archive_path
-        archive_name = archive_path.name
+        archive_name = self._upload_name_var.get().strip() or self._archive_name
         remote = f"{self._current_path}/{archive_name}".lstrip("/")
         self._set_status(f"Uploading {archive_name}…", _ORANGE)
         self._upload_btn.state(["disabled"])
@@ -371,10 +381,14 @@ def open_connect_dialog(parent: tk.Misc) -> NextcloudClient | None:
 def open_file_browser(
     parent: tk.Misc,
     client: NextcloudClient,
+    *,
     archive_path: Path | None = None,
+    archive_name: str | None = None,
 ) -> bool:
     """Open the file browser. Returns True if an upload completed."""
-    dlg = _FileBrowserDialog(parent, client, archive_path=archive_path)
+    dlg = _FileBrowserDialog(
+        parent, client, archive_path=archive_path, archive_name=archive_name
+    )
     parent.wait_window(dlg)
     return dlg.upload_successful
 
