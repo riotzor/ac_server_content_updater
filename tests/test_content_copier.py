@@ -14,12 +14,12 @@ def _make_ac_tree(root: Path) -> Path:
 
     track = content / "tracks" / "monza"
     (track / "data").mkdir(parents=True)
-    (track / "modes.ini").write_text("modes", encoding="utf-8")
+    (track / "models.ini").write_text("modes", encoding="utf-8")
     (track / "data" / "surfaces.ini").write_text("surfaces", encoding="utf-8")
 
     (content / "tracks" / "spa").mkdir(parents=True)
-    # spa has modes.ini but no surfaces.ini
-    (content / "tracks" / "spa" / "modes.ini").write_text("modes", encoding="utf-8")
+    # spa has models.ini but no surfaces.ini
+    (content / "tracks" / "spa" / "models.ini").write_text("modes", encoding="utf-8")
 
     # ks_vallunga — multi-layout track
     # models_<layout>.ini files sit at the track root; layout dirs hold surfaces.ini
@@ -93,7 +93,7 @@ def test_copy_track_copies_modes_ini(tmp_path: Path) -> None:
 
     copy_to_share(ac, {"tracks": ["monza"]}, share)
 
-    assert (share / "content" / "tracks" / "monza" / "modes.ini").exists()
+    assert (share / "content" / "tracks" / "monza" / "models.ini").exists()
 
 
 def test_copy_track_copies_surfaces_ini(tmp_path: Path) -> None:
@@ -111,7 +111,7 @@ def test_copy_track_skips_missing_surfaces_ini(tmp_path: Path) -> None:
 
     result = copy_to_share(ac, {"tracks": ["spa"]}, share)
 
-    assert result.copied == 1  # modes.ini copied
+    assert result.copied == 1  # models.ini copied
     assert result.skipped == 1  # surfaces.ini missing
 
 
@@ -238,7 +238,7 @@ def test_copy_multi_layout_track_does_not_copy_modes_ini(tmp_path: Path) -> None
         track_layouts={"ks_vallunga": "classic_circuit"},
     )
 
-    assert not (share / "content" / "tracks" / "ks_vallunga" / "modes.ini").exists()
+    assert not (share / "content" / "tracks" / "ks_vallunga" / "models.ini").exists()
 
 
 def test_copy_multi_layout_track_copies_exactly_two_files(tmp_path: Path) -> None:
@@ -257,7 +257,7 @@ def test_copy_multi_layout_track_copies_exactly_two_files(tmp_path: Path) -> Non
 
 
 def test_track_without_layout_in_map_uses_single_layout_files(tmp_path: Path) -> None:
-    """A track absent from track_layouts still uses modes.ini / surfaces.ini."""
+    """A track absent from track_layouts still uses models.ini / surfaces.ini."""
     ac = _make_ac_tree(tmp_path / "ac")
     share = tmp_path / "share"
 
@@ -268,5 +268,5 @@ def test_track_without_layout_in_map_uses_single_layout_files(tmp_path: Path) ->
         track_layouts={},  # monza not in map
     )
 
-    assert (share / "content" / "tracks" / "monza" / "modes.ini").exists()
+    assert (share / "content" / "tracks" / "monza" / "models.ini").exists()
     assert (share / "content" / "tracks" / "monza" / "data" / "surfaces.ini").exists()

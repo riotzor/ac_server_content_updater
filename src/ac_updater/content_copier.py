@@ -9,7 +9,7 @@ from pathlib import Path
 log = logging.getLogger(__name__)
 
 _CAR_FILES: tuple[str, ...] = ("data.acd",)
-_TRACK_FILES: tuple[str, ...] = ("modes.ini", "data/surfaces.ini")
+_TRACK_FILES: tuple[str, ...] = ("models.ini", "data/surfaces.ini")
 
 
 @dataclass
