@@ -292,6 +292,59 @@ class SshClient:
         self._exec(f"sudo systemctl restart {shlex.quote(service_name)}")
         log.info("Service restarted: %s", service_name)
 
+    def ensure_capacity(self, server_dir: str, car_count: int) -> int | None:
+        """Ensure MAX_CLIENTS in server_cfg.ini >= car_count.
+
+        If car_count exceeds the current value, updates it to car_count + 5
+        and returns the new value.  Returns None if no update was needed.
+        """
+        assert self._sftp is not None, "Not connected"
+        cfg_path = f"{server_dir}/cfg/server_cfg.ini"
+        try:
+            with self._sftp.open(cfg_path, "r") as fh:
+                content = fh.read().decode("utf-8", errors="replace")
+        except OSError as exc:
+            log.warning("Could not read server_cfg.ini: %s", exc)
+            return None
+
+        match = re.search(r"(?im)^MAX_CLIENTS\s*=\s*(\d+)", content)
+        if not match:
+            log.warning("MAX_CLIENTS not found in %s", cfg_path)
+            return None
+
+        current = int(match.group(1))
+        new_value = car_count + 5
+        if new_value == current:
+            log.debug("MAX_CLIENTS already %d, no change needed", current)
+            return None
+        new_content = re.sub(
+            r"(?im)^(MAX_CLIENTS\s*=\s*)\d+",
+            lambda m: m.group(1) + str(new_value),
+            content,
+            count=1,
+        )
+        try:
+            with self._sftp.open(cfg_path, "w") as fh:
+                fh.write(new_content.encode("utf-8"))
+            log.info("MAX_CLIENTS updated %d → %d (cars=%d)", current, new_value, car_count)
+            return new_value
+        except OSError as exc:
+            log.warning("Could not write server_cfg.ini: %s", exc)
+            return None
+
+    def delete_from_share(
+        self,
+        category: str,
+        names: list[str],
+        share_path: str = _SHARE_PATH,
+    ) -> None:
+        """Remove content directories from the network share via SSH exec."""
+        base = f"{share_path}/content/{category}"
+        for name in names:
+            path = f"{base}/{name}"
+            self._exec(f"sudo /usr/local/bin/ac-share-delete {shlex.quote(path)}")
+            log.info("Deleted from share: %s/%s", category, name)
+
     def list_server_cars(self, server_dir: str) -> list[str]:
         """Return sorted car directory names from <server_dir>/content/cars/."""
         assert self._sftp is not None, "Not connected"

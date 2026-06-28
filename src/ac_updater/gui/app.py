@@ -21,6 +21,7 @@ from ac_updater.content_scanner import scan_content
 from ac_updater.gui.nextcloud_panel import open_connect_dialog, open_file_browser
 from ac_updater.install_config import load_install_dir, save_install_dir
 from ac_updater.nextcloud_client import NextcloudClient
+from ac_updater.passphrase_store import delete_passphrase, load_passphrase, save_passphrase
 from ac_updater.selection_store import save_selection
 from ac_updater.server_names import get_display_name
 from ac_updater.share_config import load_share_path, save_share_path
@@ -152,6 +153,53 @@ class _LayoutPickerDialog(tk.Toplevel):
         return self._result
 
 
+class _PassphraseDialog(tk.Toplevel):
+    """Modal dialog for entering a private-key passphrase with an optional save checkbox."""
+
+    def __init__(self, parent: tk.Misc, key_name: str) -> None:
+        super().__init__(parent)
+        self.title("Key Passphrase")
+        self.resizable(False, False)
+        self.grab_set()
+        self._passphrase: str | None = None
+        self._remember_val: bool = False
+        self._remember = tk.BooleanVar(value=False)
+
+        ttk.Label(self, text=f"Passphrase for {key_name}:").pack(padx=12, pady=(12, 4))
+        self._entry = ttk.Entry(self, show="●", width=36)
+        self._entry.pack(padx=12, pady=(0, 8))
+        self._entry.focus_set()
+        ttk.Checkbutton(
+            self, text="Remember passphrase", variable=self._remember
+        ).pack(padx=12, anchor="w")
+
+        btn_row = ttk.Frame(self)
+        btn_row.pack(fill="x", padx=12, pady=12)
+        ttk.Button(btn_row, text="Cancel", command=self._cancel).pack(side="right", padx=(4, 0))
+        ttk.Button(btn_row, text="OK", command=self._ok).pack(side="right")
+
+        self.bind("<Return>", lambda _e: self._ok())
+        self.bind("<Escape>", lambda _e: self._cancel())
+        self.protocol("WM_DELETE_WINDOW", self._cancel)
+        self.wait_window()
+
+    def _ok(self) -> None:
+        self._passphrase = self._entry.get()
+        self._remember_val = self._remember.get()
+        self.destroy()
+
+    def _cancel(self) -> None:
+        self.destroy()
+
+    @property
+    def passphrase(self) -> str | None:
+        return self._passphrase
+
+    @property
+    def remember(self) -> bool:
+        return self._remember_val
+
+
 class _TrackPickerDialog(tk.Toplevel):
     """Modal dropdown for selecting a single track from a list."""
 
@@ -215,9 +263,15 @@ class _App(tk.Tk):
 
         log.info("App window created: install_dir=%s  share=%s", install_dir, self._share_path)
 
+        self._apply_styles()
         self._build_header()
         self._build_notebook(content)
         self._build_footer()
+
+    def _apply_styles(self) -> None:
+        s = ttk.Style()
+        s.configure("Primary.TLabelframe.Label", font=("", 10, "bold"))
+        s.configure("Secondary.TLabelframe.Label", font=("", 9, "bold"))
 
     # ------------------------------------------------------------------
     # Layout — header (always visible)
@@ -379,6 +433,9 @@ class _App(tk.Tk):
             side="left", padx=(4, 4)
         )
         ttk.Button(key_row, text="Browse…", command=self._on_ssh_browse_key).pack(side="left")
+        ttk.Button(
+            key_row, text="Forget Passphrase", command=self._on_forget_passphrase
+        ).pack(side="left", padx=(8, 0))
         ttk.Label(
             key_row,
             text="(leave blank for default ~/.ssh/ keys)",
@@ -415,7 +472,9 @@ class _App(tk.Tk):
         columns.grid_columnconfigure(1, weight=1)
 
         # Left: content available on the share
-        share_col = ttk.LabelFrame(columns, text="From Share", padding=4)
+        share_col = ttk.LabelFrame(
+            columns, text="From Share", style="Primary.TLabelframe", padding=4
+        )
         share_col.grid(row=0, column=0, sticky="nsew", padx=(0, 4))
         self._ssh_content_frame = share_col
         self._ssh_placeholder = ttk.Label(
@@ -424,7 +483,9 @@ class _App(tk.Tk):
         self._ssh_placeholder.pack(expand=True)
 
         # Right: content on the selected server
-        server_col = ttk.LabelFrame(columns, text="On Server", padding=4)
+        server_col = ttk.LabelFrame(
+            columns, text="On Server", style="Primary.TLabelframe", padding=4
+        )
         server_col.grid(row=0, column=1, sticky="nsew")
         server_col.grid_rowconfigure(2, weight=1)
         server_col.grid_rowconfigure(3, weight=1)
@@ -452,7 +513,7 @@ class _App(tk.Tk):
         self._server_svc_row = svc_row
 
         # Cars management (row=1, hidden until a server is selected)
-        cars_lf = ttk.LabelFrame(server_col, text="Cars", padding=4)
+        cars_lf = ttk.LabelFrame(server_col, text="Cars", style="Secondary.TLabelframe", padding=4)
         cars_lf.grid_rowconfigure(0, weight=1)
         cars_lf.grid_columnconfigure(0, weight=1)
         self._server_cars_panel = _ChecklistPanel(cars_lf, "", [])
@@ -474,7 +535,9 @@ class _App(tk.Tk):
         self._server_cars_lf = cars_lf
 
         # Tracks management (row=2, hidden until a server is selected)
-        tracks_lf = ttk.LabelFrame(server_col, text="Tracks", padding=4)
+        tracks_lf = ttk.LabelFrame(
+            server_col, text="Tracks", style="Secondary.TLabelframe", padding=4
+        )
         tracks_lf.grid_rowconfigure(1, weight=1)
         tracks_lf.grid_columnconfigure(0, weight=1)
         active_row = ttk.Frame(tracks_lf)
@@ -993,6 +1056,19 @@ class _App(tk.Tk):
                 self.after(0, lambda: self._on_ssh_connected(content, servers))
             except paramiko.PasswordRequiredException:
                 if key_path:
+                    # Try saved passphrase silently before prompting
+                    saved = load_passphrase(key_path)
+                    if saved:
+                        try:
+                            client2 = SshClient(host, user)
+                            client2.connect(key_path=key_path, passphrase=saved)
+                            self._ssh_client = client2
+                            content = client2.list_share_content()
+                            servers = client2.list_ac_servers()
+                            self.after(0, lambda: self._on_ssh_connected(content, servers))
+                            return
+                        except Exception:
+                            pass  # saved passphrase is wrong — fall through to dialog
                     self.after(0, lambda: self._on_ssh_need_passphrase(host, user, key_path))
                 else:
                     err = (
@@ -1028,23 +1104,23 @@ class _App(tk.Tk):
 
     def _on_ssh_need_passphrase(self, host: str, user: str, key_path: str) -> None:
         log.info("Key file is passphrase-protected, prompting: %s", key_path)
-        passphrase = simpledialog.askstring(
-            "Key Passphrase",
-            f"Passphrase for {Path(key_path).name}:",
-            show="●",
-            parent=self,
-        )
-        if passphrase is None:
+        dlg = _PassphraseDialog(self, Path(key_path).name)
+        if dlg.passphrase is None:
             self._ssh_connect_btn.state(["!disabled"])
             self._update_ssh_status("Not connected", _RED)
             self._set_status("SSH connection cancelled", _GRAY)
             return
+        passphrase = dlg.passphrase
+        remember = dlg.remember
 
         def _try_passphrase() -> None:
             try:
                 client = SshClient(host, user)
                 client.connect(key_path=key_path, passphrase=passphrase)
                 self._ssh_client = client
+                if remember:
+                    save_passphrase(key_path, passphrase)
+                    log.info("Passphrase saved for %s", key_path)
                 content = client.list_share_content()
                 servers = client.list_ac_servers()
                 self.after(0, lambda: self._on_ssh_connected(content, servers))
@@ -1053,6 +1129,17 @@ class _App(tk.Tk):
                 self.after(0, lambda: self._on_ssh_connect_failed(err))
 
         threading.Thread(target=_try_passphrase, daemon=True).start()
+
+    def _on_forget_passphrase(self) -> None:
+        key_path = self._ssh_key_var.get().strip()
+        if not key_path:
+            messagebox.showinfo(
+                "No key file", "Enter a key file path first.", parent=self
+            )
+            return
+        delete_passphrase(key_path)
+        self._set_status(f"Passphrase forgotten for {Path(key_path).name}", _GREEN)
+        log.info("User cleared saved passphrase for %s", key_path)
 
     def _on_ssh_need_password(self) -> None:
         host = self._ssh_host_var.get()
@@ -1084,6 +1171,87 @@ class _App(tk.Tk):
 
         threading.Thread(target=_try_password, daemon=True).start()
 
+    def _rebuild_share_panels(self, content: dict[str, list[str]]) -> None:
+        for child in self._ssh_content_frame.winfo_children():
+            if child is not self._ssh_placeholder:
+                child.destroy()
+        self._ssh_panels.clear()
+
+        has_content = any(content.values())
+        if has_content:
+            self._ssh_placeholder.pack_forget()
+            for category, items in content.items():
+                if items:
+                    cat_frame = ttk.Frame(self._ssh_content_frame)
+                    cat_frame.pack(side="left", fill="both", expand=True, padx=(0, 4))
+                    panel = _ChecklistPanel(cat_frame, title=category.title(), items=items)
+                    panel.pack(fill="both", expand=True)
+                    ttk.Button(
+                        cat_frame,
+                        text="Delete from Share",
+                        command=functools.partial(self._on_delete_from_share, category),
+                    ).pack(anchor="w", pady=(4, 0))
+                    self._ssh_panels[category] = panel
+        else:
+            self._ssh_placeholder.configure(text="No content found on the share")
+            self._ssh_placeholder.pack(expand=True)
+
+    def _on_delete_from_share(self, category: str) -> None:
+        if self._ssh_client is None:
+            return
+        panel = self._ssh_panels.get(category)
+        if panel is None:
+            return
+        selected = panel.get_selected()
+        if not selected:
+            messagebox.showwarning(
+                "Nothing selected", f"Select {category} to delete from the share.", parent=self
+            )
+            return
+        if not messagebox.askyesno(
+            "Confirm Delete",
+            f"Permanently delete {len(selected)} {category} from the share?\n\n"
+            "This cannot be undone.",
+            parent=self,
+        ):
+            return
+
+        client = self._ssh_client
+        self._start_progress(f"Deleting {len(selected)} {category} from share…")
+
+        def _worker() -> None:
+            errors: list[str] = []
+            for name in selected:
+                try:
+                    client.delete_from_share(category, [name])
+                except RuntimeError as exc:
+                    errors.append(f"{name}: {exc}")
+            try:
+                new_content = client.list_share_content()
+            except Exception:
+                new_content = {}
+            self.after(0, self._stop_progress)
+            self.after(0, lambda: self._rebuild_share_panels(new_content))
+            ts = datetime.now().strftime("%H:%M:%S")
+            if errors:
+                for e in errors:
+                    self.after(
+                        0,
+                        functools.partial(self._append_server_result, f"[{ts}]  {e}", "error"),
+                    )
+                fail_msg = "Delete from share failed (see results)"
+                self.after(0, lambda: self._set_status(fail_msg, _RED))
+            else:
+                n = len(selected)
+                self.after(0, lambda: self._append_server_result(
+                    f"[{ts}]  Deleted {n} {category} from share", "ok"
+                ))
+                self.after(0, lambda: self._set_status(
+                    f"Deleted {n} {category} from share", _GREEN
+                ))
+
+        threading.Thread(target=_worker, daemon=True).start()
+
     def _on_ssh_connected(
         self, content: dict[str, list[str]], servers: list[str]
     ) -> None:
@@ -1094,23 +1262,7 @@ class _App(tk.Tk):
         self._ssh_disconnect_btn.state(["!disabled"])
 
         # Rebuild share content panels
-        self._ssh_placeholder.pack_forget()
-        for panel in self._ssh_panels.values():
-            panel.destroy()
-        self._ssh_panels.clear()
-
-        has_content = any(content.values())
-        if has_content:
-            for category, items in content.items():
-                if items:
-                    panel = _ChecklistPanel(
-                        self._ssh_content_frame, title=category.title(), items=items
-                    )
-                    panel.pack(side="left", fill="both", expand=True, padx=(0, 4))
-                    self._ssh_panels[category] = panel
-        else:
-            self._ssh_placeholder.configure(text="No content found on the share")
-            self._ssh_placeholder.pack(expand=True)
+        self._rebuild_share_panels(content)
 
         # Populate server dropdown
         self._ssh_server_map.clear()
@@ -1534,6 +1686,13 @@ class _App(tk.Tk):
                     self.after(0, lambda: self._append_server_result(
                         f"[{ts}]  entry_list.ini rebuilt ({n} car(s))", "ok"
                     ))
+                    new_max = client.ensure_capacity(server_dir, n)
+                    if new_max is not None:
+                        ts_cap = datetime.now().strftime("%H:%M:%S")
+                        self.after(0, lambda: self._append_server_result(
+                            f"[{ts_cap}]  MAX_CLIENTS updated to {new_max} ({n} cars + 5)",
+                            "ok",
+                        ))
                 except Exception as exc:
                     error = f"Failed to rebuild entry_list.ini: {exc}"
 
@@ -1758,6 +1917,13 @@ class _App(tk.Tk):
                     self.after(0, lambda: self._append_server_result(
                         f"[{ts2}]  entry_list.ini rebuilt ({n} car(s))", "ok"
                     ))
+                    new_max = client.ensure_capacity(server_dir, n)
+                    if new_max is not None:
+                        ts_cap = datetime.now().strftime("%H:%M:%S")
+                        self.after(0, lambda: self._append_server_result(
+                            f"[{ts_cap}]  MAX_CLIENTS updated to {new_max} ({n} cars + 5)",
+                            "ok",
+                        ))
                 except Exception as exc:
                     error = f"Failed to rebuild entry_list.ini: {exc}"
                     log.error("entry_list rebuild failed: %s", exc)

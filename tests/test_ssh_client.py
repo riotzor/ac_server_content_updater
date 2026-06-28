@@ -1144,3 +1144,140 @@ def test_patch_surfaces_ini_noop_when_file_missing() -> None:
         client.connect()
     # Should not raise
     client.patch_surfaces_ini("/home/acserver/ac-drift", "missing_track")
+
+
+# ---------------------------------------------------------------------------
+# ensure_capacity
+# ---------------------------------------------------------------------------
+
+_SERVER_CFG = "[SERVER]\nNAME=Test\nMAX_CLIENTS=16\nTHREADS=2\n"
+
+
+def _apply_cfg_sftp(sftp: MagicMock, content: str) -> list[bytes]:
+    """Wire sftp.open() to serve content on reads; capture bytes on writes."""
+    buf: list[bytes] = []
+
+    def _open(path: str, mode: str = "r") -> MagicMock:
+        fh = MagicMock()
+        if "w" in mode:
+            fh.__enter__.return_value = fh
+            fh.write.side_effect = buf.append
+        else:
+            fh.__enter__.return_value = fh
+            fh.read.return_value = content.encode("utf-8")
+        return fh
+
+    sftp.open.side_effect = _open
+    return buf
+
+
+def test_ensure_capacity_updates_when_car_count_exceeds_max() -> None:
+    mock_ssh = _make_mock_ssh()
+    _apply_cfg_sftp(mock_ssh.open_sftp.return_value, _SERVER_CFG)
+
+    with patch("ac_updater.ssh_client.paramiko.SSHClient", return_value=mock_ssh):
+        client = SshClient("h", "u")
+        client.connect()
+
+    result = client.ensure_capacity("/srv/ac", car_count=20)
+
+    assert result == 25  # 20 cars + 5
+
+
+def test_ensure_capacity_writes_new_value_to_cfg() -> None:
+    mock_ssh = _make_mock_ssh()
+    buf = _apply_cfg_sftp(mock_ssh.open_sftp.return_value, _SERVER_CFG)
+
+    with patch("ac_updater.ssh_client.paramiko.SSHClient", return_value=mock_ssh):
+        client = SshClient("h", "u")
+        client.connect()
+
+    client.ensure_capacity("/srv/ac", car_count=20)
+
+    written = b"".join(buf).decode()
+    assert "MAX_CLIENTS=25" in written
+
+
+def test_ensure_capacity_shrinks_when_car_count_falls_below_max() -> None:
+    mock_ssh = _make_mock_ssh()
+    _apply_cfg_sftp(mock_ssh.open_sftp.return_value, _SERVER_CFG)
+
+    with patch("ac_updater.ssh_client.paramiko.SSHClient", return_value=mock_ssh):
+        client = SshClient("h", "u")
+        client.connect()
+
+    result = client.ensure_capacity("/srv/ac", car_count=5)
+
+    assert result == 10  # 5 cars + 5
+
+
+def test_ensure_capacity_updates_when_car_count_plus_five_differs_from_current() -> None:
+    mock_ssh = _make_mock_ssh()
+    _apply_cfg_sftp(mock_ssh.open_sftp.return_value, _SERVER_CFG)
+
+    with patch("ac_updater.ssh_client.paramiko.SSHClient", return_value=mock_ssh):
+        client = SshClient("h", "u")
+        client.connect()
+
+    # current MAX_CLIENTS=16; car_count=16 → new_value=21 ≠ 16 → update
+    result = client.ensure_capacity("/srv/ac", car_count=16)
+
+    assert result == 21
+
+
+def test_ensure_capacity_noop_when_already_at_car_count_plus_five() -> None:
+    # MAX_CLIENTS=16, car_count=11 → new_value=16 == current → no write
+    cfg = "[SERVER]\nMAX_CLIENTS=16\n"
+    mock_ssh = _make_mock_ssh()
+    _apply_cfg_sftp(mock_ssh.open_sftp.return_value, cfg)
+
+    with patch("ac_updater.ssh_client.paramiko.SSHClient", return_value=mock_ssh):
+        client = SshClient("h", "u")
+        client.connect()
+
+    result = client.ensure_capacity("/srv/ac", car_count=11)
+
+    assert result is None
+
+
+def test_ensure_capacity_returns_none_when_file_missing() -> None:
+    mock_ssh = _make_mock_ssh()
+    mock_ssh.open_sftp.return_value.open.side_effect = OSError("no such file")
+
+    with patch("ac_updater.ssh_client.paramiko.SSHClient", return_value=mock_ssh):
+        client = SshClient("h", "u")
+        client.connect()
+
+    result = client.ensure_capacity("/srv/ac", car_count=20)
+
+    assert result is None
+
+
+def test_ensure_capacity_returns_none_when_key_missing() -> None:
+    cfg = "[SERVER]\nNAME=Test\n"  # no MAX_CLIENTS line
+    mock_ssh = _make_mock_ssh()
+    _apply_cfg_sftp(mock_ssh.open_sftp.return_value, cfg)
+
+    with patch("ac_updater.ssh_client.paramiko.SSHClient", return_value=mock_ssh):
+        client = SshClient("h", "u")
+        client.connect()
+
+    result = client.ensure_capacity("/srv/ac", car_count=20)
+
+    assert result is None
+
+
+def test_ensure_capacity_reads_from_correct_path() -> None:
+    mock_ssh = _make_mock_ssh()
+    sftp = mock_ssh.open_sftp.return_value
+    _apply_cfg_sftp(sftp, _SERVER_CFG)
+
+    with patch("ac_updater.ssh_client.paramiko.SSHClient", return_value=mock_ssh):
+        client = SshClient("h", "u")
+        client.connect()
+
+    client.ensure_capacity("/srv/ac-server", car_count=20)
+
+    assert any(
+        "/srv/ac-server/cfg/server_cfg.ini" in str(c) for c in sftp.open.call_args_list
+    )
