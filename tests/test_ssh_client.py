@@ -1,13 +1,11 @@
 from __future__ import annotations
 
 import stat
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 import paramiko
-import pytest
 
-from ac_updater.ssh_client import DeployResult, SshClient
-
+from ac_updater.ssh_client import SshClient
 
 # ---------------------------------------------------------------------------
 # Helpers
