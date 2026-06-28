@@ -418,7 +418,7 @@ def test_stop_service_calls_systemctl_stop() -> None:
     client.stop_service("ac-drift.service")
 
     cmd: str = mock_ssh.exec_command.call_args[0][0]
-    assert "systemctl stop" in cmd
+    assert "sudo systemctl stop" in cmd
     assert "ac-drift.service" in cmd
 
 

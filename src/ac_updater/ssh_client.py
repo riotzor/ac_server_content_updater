@@ -194,9 +194,9 @@ class SshClient:
         return result
 
     def stop_service(self, service_name: str) -> None:
-        """Stop a systemd service on the remote host."""
+        """Stop a systemd service on the remote host via sudo."""
         log.info("Stopping service: %s", service_name)
-        self._exec(f"systemctl stop {shlex.quote(service_name)}")
+        self._exec(f"sudo systemctl stop {shlex.quote(service_name)}")
         log.info("Service stopped: %s", service_name)
 
     def list_server_cars(self, server_dir: str) -> list[str]:
