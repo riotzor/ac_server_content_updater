@@ -302,7 +302,7 @@ class SshClient:
         base = f"{share_path}/content/{category}"
         for name in names:
             path = f"{base}/{name}"
-            self._exec(f"rm -rf {shlex.quote(path)}")
+            self._exec(f"sudo rm -rf {shlex.quote(path)}")
             log.info("Deleted from share: %s/%s", category, name)
 
     def list_server_cars(self, server_dir: str) -> list[str]:
