@@ -18,7 +18,13 @@ from ac_updater.ac_finder import find_ac_install
 from ac_updater.archiver import create_archive
 from ac_updater.content_copier import CopyResult, copy_to_share, detect_track_layouts
 from ac_updater.content_scanner import scan_content
-from ac_updater.gui.nextcloud_panel import open_connect_dialog, open_file_browser
+from ac_updater.gui.nextcloud_panel import (
+    FileBrowserPanel,
+    TkLogHandler,
+    add_tooltip,
+    open_connect_dialog,
+    open_file_browser,
+)
 from ac_updater.install_config import load_install_dir, save_install_dir
 from ac_updater.nextcloud_client import NextcloudClient
 from ac_updater.passphrase_store import delete_passphrase, load_passphrase, save_passphrase
@@ -260,6 +266,8 @@ class _App(tk.Tk):
         self._ssh_server_map: dict[str, str] = {}
         self._ssh_panels: dict[str, _ChecklistPanel] = {}
         self._current_server_name: str = ""
+        self._nc_file_panel: FileBrowserPanel | None = None
+        self._nc_log_handler: TkLogHandler | None = None
 
         log.info("App window created: install_dir=%s  share=%s", install_dir, self._share_path)
 
@@ -569,42 +577,125 @@ class _App(tk.Tk):
         self._server_tracks_lf = tracks_lf
 
     def _build_nextcloud_tab(self, parent: ttk.Frame) -> None:
-        conn_frame = ttk.LabelFrame(parent, text="Connection", padding=10)
-        conn_frame.pack(fill="x", pady=(0, 14))
+        # ── Connections ───────────────────────────────────────────────────
+        conn_lf = ttk.LabelFrame(
+            parent, text="Connections", style="Primary.TLabelframe", padding=8
+        )
+        conn_lf.pack(fill="x", pady=(0, 8))
 
-        status_row = ttk.Frame(conn_frame)
-        status_row.pack(fill="x")
-        ttk.Label(status_row, text="Status:").pack(side="left")
+        # Nextcloud row
+        nc_row = ttk.Frame(conn_lf)
+        nc_row.pack(fill="x", pady=(0, 4))
+        ttk.Label(nc_row, text="Nextcloud:", width=13, anchor="e").pack(side="left")
         self._nc_status_var = tk.StringVar(value="Not connected")
         self._nc_status_label = ttk.Label(
-            status_row, textvariable=self._nc_status_var, foreground=_RED
+            nc_row, textvariable=self._nc_status_var, foreground=_RED, width=28
         )
-        self._nc_status_label.pack(side="left", padx=(6, 16))
+        self._nc_status_label.pack(side="left", padx=(6, 8))
         self._nc_connect_btn = ttk.Button(
-            status_row, text="Connect...", command=self._on_nc_connect
+            nc_row, text="Connect…", command=self._on_nc_connect
         )
-        self._nc_connect_btn.pack(side="left", padx=(0, 6))
+        self._nc_connect_btn.pack(side="left", padx=(0, 4))
         self._nc_disconnect_btn = ttk.Button(
-            status_row, text="Disconnect", command=self._on_nc_disconnect
+            nc_row, text="Disconnect", command=self._on_nc_disconnect
         )
         self._nc_disconnect_btn.pack(side="left")
         self._nc_disconnect_btn.state(["disabled"])
 
-        ttk.Separator(parent, orient="horizontal").pack(fill="x", pady=(0, 12))
+        # AC Server row
+        ssh_row = ttk.Frame(conn_lf)
+        ssh_row.pack(fill="x")
+        ttk.Label(ssh_row, text="AC Server:", width=13, anchor="e").pack(side="left")
+        self._nc_ssh_status_var = tk.StringVar(value="Not connected")
+        self._nc_ssh_status_label = ttk.Label(
+            ssh_row, textvariable=self._nc_ssh_status_var, foreground=_RED, width=28
+        )
+        self._nc_ssh_status_label.pack(side="left", padx=(6, 8))
+        self._nc_ssh_btn = ttk.Button(
+            ssh_row, text="Connect to Server…", command=self._on_nc_ssh_connect
+        )
+        self._nc_ssh_btn.pack(side="left", padx=(0, 12))
+        ttk.Label(ssh_row, text="Server:").pack(side="left")
+        self._nc_server_var = tk.StringVar()
+        self._nc_server_combo = ttk.Combobox(
+            ssh_row, textvariable=self._nc_server_var, state="readonly", width=32
+        )
+        self._nc_server_combo.pack(side="left", padx=(4, 0))
+        self._nc_server_combo.state(["disabled"])
 
-        ttk.Label(
-            parent,
-            text="Create an archive from the current Content Browser selection"
-            " and upload it to Nextcloud.",
-            wraplength=500,
-            foreground=_GRAY,
-        ).pack(anchor="w", pady=(0, 8))
+        # ── Paned: left = packs/progress/log · right = file browser ──────
+        paned = ttk.PanedWindow(parent, orient="horizontal")
+        paned.pack(fill="both", expand=True)
+
+        left = ttk.Frame(paned)
+        paned.add(left, weight=1)
+        right = ttk.Frame(paned)
+        paned.add(right, weight=2)
+
+        # ── Left: Content Packs ──────────────────────────────────────────
+        packs_lf = ttk.LabelFrame(
+            left, text="Content Packs", style="Primary.TLabelframe", padding=8
+        )
+        packs_lf.pack(fill="x", pady=(0, 8))
+
         self._upload_btn = ttk.Button(
-            parent,
-            text="Create & Upload to Nextcloud",
+            packs_lf,
+            text="Create & Upload from Content Browser",
             command=self._on_create_upload,
         )
-        self._upload_btn.pack(anchor="w")
+        self._upload_btn.pack(fill="x", pady=(0, 4))
+        add_tooltip(
+            self._upload_btn,
+            "Archive the cars and tracks selected in the Content Browser tab "
+            "and upload the archive to Nextcloud.",
+        )
+
+        self._nc_server_pack_btn = ttk.Button(
+            packs_lf,
+            text="Create Server Pack & Upload…",
+            command=self._on_create_server_pack,
+        )
+        self._nc_server_pack_btn.pack(fill="x")
+        add_tooltip(
+            self._nc_server_pack_btn,
+            "Archive all cars and tracks currently installed on the selected "
+            "AC server and upload to Nextcloud. Requires an active server connection.",
+        )
+
+        # ── Left: Progress ───────────────────────────────────────────────
+        prog_lf = ttk.LabelFrame(left, text="Progress", padding=6)
+        prog_lf.pack(fill="x", pady=(0, 8))
+        self._nc_progress = ttk.Progressbar(prog_lf, mode="determinate", maximum=100)
+        self._nc_progress.pack(fill="x")
+        self._nc_progress_var = tk.StringVar()
+        ttk.Label(
+            prog_lf, textvariable=self._nc_progress_var, foreground=_GRAY
+        ).pack(anchor="w", pady=(2, 0))
+
+        # ── Left: Archive log ────────────────────────────────────────────
+        log_lf = ttk.LabelFrame(left, text="Logs", padding=4)
+        log_lf.pack(fill="both", expand=True)
+        self._nc_log_text = tk.Text(
+            log_lf, height=10, state="disabled", wrap="word",
+            font=("Courier New", 8), background="#1e1e1e", foreground="#d4d4d4",
+            insertbackground="white",
+        )
+        log_sb = ttk.Scrollbar(log_lf, orient="vertical", command=self._nc_log_text.yview)
+        self._nc_log_text.configure(yscrollcommand=log_sb.set)
+        log_sb.pack(side="right", fill="y")
+        self._nc_log_text.pack(fill="both", expand=True)
+
+        # ── Right: Nextcloud file browser ────────────────────────────────
+        self._nc_browser_lf = ttk.LabelFrame(
+            right, text="Nextcloud Files", style="Primary.TLabelframe", padding=4
+        )
+        self._nc_browser_lf.pack(fill="both", expand=True)
+        self._nc_browser_placeholder = ttk.Label(
+            self._nc_browser_lf,
+            text="Connect to Nextcloud to browse files.",
+            foreground=_GRAY,
+        )
+        self._nc_browser_placeholder.pack(expand=True)
 
     def _build_archive_tab(self, parent: ttk.Frame) -> None:
         ttk.Label(
@@ -683,11 +774,46 @@ class _App(tk.Tk):
             btn.state(["disabled"])
         self._nc_connect_btn.state(["disabled"])
         self._nc_disconnect_btn.state(["disabled"])
+        self._nc_server_pack_btn.state(["disabled"])
 
     def _enable_buttons(self) -> None:
         for btn in (self._archive_btn, self._upload_btn, self._server_btn):
             btn.state(["!disabled"])
+        self._nc_server_pack_btn.state(["!disabled"])
         self._update_nc_status()
+
+    # ------------------------------------------------------------------
+    # NC-specific progress / log helpers
+    # ------------------------------------------------------------------
+
+    def _nc_start_progress(self, message: str, total: int) -> None:
+        self._nc_progress.configure(mode="determinate", maximum=total, value=0)
+        self._nc_progress_var.set(message)
+
+    def _nc_update_progress(self, done: int, total: int, message: str) -> None:
+        self._nc_progress.configure(value=done)
+        self._nc_progress_var.set(message)
+
+    def _nc_stop_progress(self) -> None:
+        self._nc_progress.configure(value=0)
+        self._nc_progress_var.set("")
+
+    def _nc_log_clear(self) -> None:
+        self._nc_log_text.configure(state="normal")
+        self._nc_log_text.delete("1.0", "end")
+        self._nc_log_text.configure(state="disabled")
+
+    def _nc_attach_log_handler(self) -> TkLogHandler:
+        self._nc_log_clear()
+        handler = TkLogHandler(self._nc_log_text)
+        logging.getLogger("ac_updater").addHandler(handler)
+        self._nc_log_handler = handler
+        return handler
+
+    def _nc_detach_log_handler(self) -> None:
+        if self._nc_log_handler is not None:
+            logging.getLogger("ac_updater").removeHandler(self._nc_log_handler)
+            self._nc_log_handler = None
 
     # ------------------------------------------------------------------
     # Nextcloud connection state
@@ -695,7 +821,7 @@ class _App(tk.Tk):
 
     def _update_nc_status(self) -> None:
         if self._nc_client is not None:
-            self._nc_status_var.set(f"Connected as  {self._nc_client.username}")
+            self._nc_status_var.set(f"Connected as {self._nc_client.username}")
             self._nc_status_label.configure(foreground=_GREEN)
             self._nc_connect_btn.state(["disabled"])
             self._nc_disconnect_btn.state(["!disabled"])
@@ -705,12 +831,34 @@ class _App(tk.Tk):
             self._nc_connect_btn.state(["!disabled"])
             self._nc_disconnect_btn.state(["disabled"])
 
+    def _update_nc_ssh_status(self) -> None:
+        if self._ssh_client is not None and self._ssh_client.is_connected:
+            host = self._ssh_host_var.get().strip()
+            self._nc_ssh_status_var.set(f"Connected to {host}")
+            self._nc_ssh_status_label.configure(foreground=_GREEN)
+            self._nc_ssh_btn.configure(text="Disconnect Server")
+            self._nc_ssh_btn.configure(command=self._on_nc_ssh_disconnect)
+            servers = list(self._ssh_server_map.keys())
+            self._nc_server_combo.configure(values=servers)
+            self._nc_server_combo.state(["!disabled"])
+            if servers and not self._nc_server_var.get():
+                self._nc_server_var.set(servers[0])
+        else:
+            self._nc_ssh_status_var.set("Not connected")
+            self._nc_ssh_status_label.configure(foreground=_RED)
+            self._nc_ssh_btn.configure(text="Connect to Server…")
+            self._nc_ssh_btn.configure(command=self._on_nc_ssh_connect)
+            self._nc_server_combo.configure(values=[])
+            self._nc_server_combo.state(["disabled"])
+            self._nc_server_var.set("")
+
     def _on_nc_connect(self) -> None:
         log.info("User opened Nextcloud connection dialog")
         client = open_connect_dialog(self)
         if client is not None:
             self._nc_client = client
             log.info("Nextcloud connected as '%s'", client.username)
+            self._init_nc_file_panel(client)
         self._update_nc_status()
 
     def _on_nc_disconnect(self) -> None:
@@ -718,6 +866,38 @@ class _App(tk.Tk):
             log.info("User disconnected from Nextcloud (was '%s')", self._nc_client.username)
         self._nc_client = None
         self._update_nc_status()
+        if self._nc_file_panel is not None:
+            self._nc_file_panel.destroy()
+            self._nc_file_panel = None
+        self._nc_browser_placeholder.pack(expand=True)
+
+    def _on_nc_ssh_connect(self) -> None:
+        if self._ssh_client is not None:
+            self._update_nc_ssh_status()
+            return
+        host = self._ssh_host_var.get().strip()
+        if not host:
+            messagebox.showinfo(
+                "Server not configured",
+                "Configure the SSH connection settings in the Server Manager tab first.",
+                parent=self,
+            )
+            self._nb.select(1)  # type: ignore[no-untyped-call]
+            return
+        self._on_ssh_connect()
+
+    def _on_nc_ssh_disconnect(self) -> None:
+        self._on_ssh_disconnect()
+        self._update_nc_ssh_status()
+
+    def _init_nc_file_panel(self, client: NextcloudClient) -> None:
+        if self._nc_file_panel is not None:
+            self._nc_file_panel.set_client(client)
+            return
+        self._nc_browser_placeholder.pack_forget()
+        self._nc_file_panel = FileBrowserPanel(self._nc_browser_lf)
+        self._nc_file_panel.pack(fill="both", expand=True)
+        self._nc_file_panel.set_client(client)
 
     # ------------------------------------------------------------------
     # Server results log helpers
@@ -881,46 +1061,125 @@ class _App(tk.Tk):
 
         if self._nc_client is None:
             log.info("No Nextcloud client — opening connection dialog from upload flow")
-            self._nc_client = open_connect_dialog(self)
+            client = open_connect_dialog(self)
+            if client is not None:
+                self._nc_client = client
+                self._init_nc_file_panel(client)
             self._update_nc_status()
         if self._nc_client is None:
             log.info("Nextcloud connect dialog cancelled")
             return
 
-        install_dir = self._install_dir
-        nc_client = self._nc_client
-        default_name = _default_archive_name(selection)
-        total_items = sum(len(v) for v in selection.values())
+        self._nc_run_archive_and_upload(
+            selection=selection,
+            archive_name=_default_archive_name(selection),
+            label="Create & Upload",
+        )
 
-        # mkstemp atomically reserves a unique path; unlink so 7-zip creates fresh
+    def _on_create_server_pack(self) -> None:
+        if self._ssh_client is None or not self._ssh_client.is_connected:
+            messagebox.showinfo(
+                "Server not connected",
+                "Connect to an AC server in the Server Manager tab (or via the "
+                "AC Server connection row above) before creating a server pack.",
+                parent=self,
+            )
+            return
+
+        server_label = self._nc_server_var.get()
+        if not server_label:
+            messagebox.showinfo(
+                "No server selected",
+                "Select a server from the dropdown.",
+                parent=self,
+            )
+            return
+
+        if self._nc_client is None:
+            log.info("No Nextcloud client — opening connection dialog from server pack flow")
+            client = open_connect_dialog(self)
+            if client is not None:
+                self._nc_client = client
+                self._init_nc_file_panel(client)
+            self._update_nc_status()
+        if self._nc_client is None:
+            log.info("Nextcloud connect dialog cancelled")
+            return
+
+        server_dir = self._ssh_server_map[server_label]
+        ssh = self._ssh_client
+        label = server_label.split("  [")[0]  # display name only
+
+        self._disable_buttons()
+        self._nc_start_progress("Reading server content…", 1)
+        log.info("Server Pack initiated: server=%s  dir=%s", label, server_dir)
+
+        def _worker() -> None:
+            try:
+                cars = ssh.list_server_cars(server_dir)
+                tracks = ssh.list_server_tracks(server_dir)
+                selection = {"cars": cars, "tracks": tracks}
+                total = len(cars) + len(tracks)
+                log.info("Server content: %d cars, %d tracks", len(cars), len(tracks))
+                archive_name = f"server_pack_{label.replace(' ', '_').lower()}.7z"
+                self.after(
+                    0,
+                    lambda: self._nc_run_archive_and_upload(
+                        selection=selection,
+                        archive_name=archive_name,
+                        label=f"Server Pack [{label}]",
+                        total_override=total,
+                    ),
+                )
+            except Exception as exc:
+                err = str(exc)
+                log.error("Failed to read server content: %s", exc)
+                self.after(0, self._nc_stop_progress)
+                self.after(0, lambda: messagebox.showerror("Server Pack failed", err))
+                self.after(0, self._enable_buttons)
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _nc_run_archive_and_upload(
+        self,
+        selection: dict[str, list[str]],
+        archive_name: str,
+        label: str,
+        total_override: int | None = None,
+    ) -> None:
+        total_items = total_override if total_override is not None else sum(
+            len(v) for v in selection.values()
+        )
+        install_dir = self._install_dir
+        assert self._nc_client is not None, "caller must ensure NC client is connected"
+        nc_client = self._nc_client
+
         _fd, _tmp = tempfile.mkstemp(suffix=".7z")
         os.close(_fd)
         os.unlink(_tmp)
         tmp_path = Path(_tmp)
 
         log.info(
-            "Create & Upload initiated: tmp=%s  items=%d  default_name=%s",
-            tmp_path, total_items, default_name,
+            "%s initiated: tmp=%s  items=%d  archive_name=%s",
+            label, tmp_path, total_items, archive_name,
         )
-        self._start_progress_determinate(
-            f"Creating archive… 0 / {total_items} items", total_items
-        )
+        self._nc_start_progress(f"Creating archive… 0 / {total_items} items", total_items)
         self._disable_buttons()
+        self._nc_attach_log_handler()
 
         def on_progress(done: int, total: int) -> None:
             msg = f"Creating archive… {done} / {total} items"
-            self.after(0, lambda: self._update_progress(done, total, msg))
+            self.after(0, lambda: self._nc_update_progress(done, total, msg))
 
         def _worker() -> None:
             try:
-                create_archive(
-                    install_dir, selection, tmp_path, on_progress=on_progress
-                )
-                self.after(0, lambda: self._on_archive_ready(nc_client, tmp_path, default_name))
+                create_archive(install_dir, selection, tmp_path, on_progress=on_progress)
+                self.after(0, lambda: self._on_nc_archive_ready(nc_client, tmp_path, archive_name))
             except FileNotFoundError as exc:
                 err = str(exc)
-                log.error("Create & Upload — archive failed (7-Zip not found): %s", exc)
-                self.after(0, self._stop_progress)
+                log.error("%s — archive failed (7-Zip not found): %s", label, exc)
+                self.after(0, self._nc_stop_progress)
+                self.after(0, self._nc_detach_log_handler)
                 self.after(0, lambda: messagebox.showerror("7-Zip not found", err))
                 self.after(
                     0, lambda: self._set_status("Archive failed — 7-Zip not found", _RED)
@@ -928,35 +1187,63 @@ class _App(tk.Tk):
                 self.after(0, self._enable_buttons)
             except subprocess.CalledProcessError as exc:
                 msg = f"7-Zip exited with code {exc.returncode}"
-                log.error("Create & Upload — archive failed: %s", msg)
-                self.after(0, self._stop_progress)
+                log.error("%s — archive failed: %s", label, msg)
+                self.after(0, self._nc_stop_progress)
+                self.after(0, self._nc_detach_log_handler)
                 self.after(0, lambda: messagebox.showerror("Archive failed", msg))
                 self.after(0, lambda: self._set_status("Archive failed", _RED))
                 self.after(0, self._enable_buttons)
 
         threading.Thread(target=_worker, daemon=True).start()
 
-    def _on_archive_ready(
+    def _on_nc_archive_ready(
         self, nc_client: NextcloudClient, tmp_path: Path, archive_name: str
     ) -> None:
-        self._stop_progress()
+        self._nc_stop_progress()
+        # Keep log handler attached so upload logs appear in the Logs panel.
         log.info("Archive ready for upload: %s  (as '%s')", tmp_path, archive_name)
-        self._set_status("Archive ready — select upload destination…", _ORANGE)
-        uploaded = open_file_browser(
-            self, nc_client, archive_path=tmp_path, archive_name=archive_name
-        )
-        if uploaded:
-            log.info("Upload completed successfully")
-            self._set_status("Upload complete", _GREEN)
+        self._set_status("Archive ready — browse Nextcloud and click Upload Here", _ORANGE)
+        # Switch progress bar to byte-based upload mode.
+        self._nc_progress.configure(maximum=100, value=0)
+        self._nc_progress_var.set("Waiting for upload…")
+
+        def on_upload_progress(sent: int, total: int) -> None:
+            pct = int(sent / total * 100) if total else 100
+            msg = (
+                f"Uploading… {sent / 1_048_576:.1f} / {total / 1_048_576:.1f} MB"
+                f"  ({pct}%)"
+            )
+            self._nc_progress.configure(value=pct)
+            self._nc_progress_var.set(msg)
+
+        def _cleanup(success: bool) -> None:
+            self._nc_detach_log_handler()
+            self._nc_stop_progress()
+            if success:
+                log.info("Upload completed successfully")
+                self._set_status("Upload complete", _GREEN)
+            else:
+                log.info("Upload cancelled by user")
+                self._set_status("Upload cancelled", _GRAY)
+            try:
+                tmp_path.unlink(missing_ok=True)
+                log.debug("Temp archive cleaned up: %s", tmp_path)
+            except OSError as exc:
+                log.warning("Could not clean up temp archive %s: %s", tmp_path, exc)
+            self._enable_buttons()
+
+        if self._nc_file_panel is not None:
+            self._nc_file_panel.set_archive(
+                tmp_path, archive_name,
+                on_done=_cleanup,
+                on_progress=on_upload_progress,
+            )
         else:
-            log.info("Upload cancelled by user")
-            self._set_status("Upload cancelled", _GRAY)
-        try:
-            tmp_path.unlink(missing_ok=True)
-            log.debug("Temp archive cleaned up: %s", tmp_path)
-        except OSError as exc:
-            log.warning("Could not clean up temp archive %s: %s", tmp_path, exc)
-        self._enable_buttons()
+            # Fallback: open standalone dialog if file browser not yet visible
+            uploaded = open_file_browser(
+                self, nc_client, archive_path=tmp_path, archive_name=archive_name
+            )
+            _cleanup(uploaded)
 
     # ------------------------------------------------------------------
     # Actions — Server Update tab
@@ -1281,6 +1568,7 @@ class _App(tk.Tk):
             self._ssh_deploy_btn.state(["disabled"])
 
         self._set_status(f"SSH connected to {host}", _GREEN)
+        self._update_nc_ssh_status()
 
     def _on_ssh_connect_failed(self, err: str) -> None:
         log.error("SSH connection failed: %s", err)
@@ -1310,6 +1598,7 @@ class _App(tk.Tk):
         self._ssh_server_combo.set("")
         self._ssh_placeholder.configure(text="Connect to browse content on the share")
         self._ssh_placeholder.pack(expand=True)
+        self._update_nc_ssh_status()
         self._clear_server_mgmt_panel()
         self._set_status("SSH disconnected", _GRAY)
 
