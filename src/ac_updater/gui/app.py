@@ -19,6 +19,7 @@ from ac_updater.archiver import create_archive
 from ac_updater.content_copier import CopyResult, copy_to_share
 from ac_updater.content_scanner import scan_content
 from ac_updater.gui.nextcloud_panel import open_connect_dialog, open_file_browser
+from ac_updater.install_config import load_install_dir, save_install_dir
 from ac_updater.nextcloud_client import NextcloudClient
 from ac_updater.selection_store import save_selection
 from ac_updater.server_names import get_display_name
@@ -70,7 +71,7 @@ class _ChecklistPanel(ttk.LabelFrame):
         )
 
         for item in items:
-            var = tk.BooleanVar(value=True)
+            var = tk.BooleanVar(value=False)
             self._vars[item] = var
             ttk.Checkbutton(self._inner, text=item, variable=var).pack(anchor="w", pady=1)
 
@@ -147,7 +148,7 @@ class _App(tk.Tk):
         tab4 = ttk.Frame(self._nb, padding=12)
 
         self._nb.add(tab1, text="  Content Browser  ")
-        self._nb.add(tab2, text="  Server Update  ")
+        self._nb.add(tab2, text="  Server Manager  ")
         self._nb.add(tab3, text="  Nextcloud  ")
         self._nb.add(tab4, text="  Archive  ")
 
@@ -155,6 +156,9 @@ class _App(tk.Tk):
         self._build_server_tab(tab2)
         self._build_nextcloud_tab(tab3)
         self._build_archive_tab(tab4)
+
+        self._nb.select(1)  # type: ignore[no-untyped-call]  # Server Manager default tab
+        self._nb.bind("<<NotebookTabChanged>>", self._on_tab_changed)
 
     def _build_content_tab(self, parent: ttk.Frame, content: dict[str, list[str]]) -> None:
         self._panel_area = ttk.Frame(parent)
@@ -182,8 +186,22 @@ class _App(tk.Tk):
         self._share_path_label.pack(side="left", padx=(6, 4))
         ttk.Button(share_row, text="Change...", command=self._on_change_share).pack(side="left")
 
+        # Selected content summary (refreshed from the Content Browser)
+        sel_lf = ttk.LabelFrame(parent, text="Content Browser selection", padding=4)
+        sel_lf.pack(fill="x", pady=(0, 6))
+        self._selection_text = tk.Text(
+            sel_lf,
+            height=3,
+            state="disabled",
+            wrap="word",
+            font=("Consolas", 9),
+            relief="flat",
+        )
+        self._selection_text.pack(fill="x")
+        self._refresh_selection_display()
+
         self._server_btn = ttk.Button(
-            parent, text="Server Content Update", command=self._on_server_update
+            parent, text="Copy to Share", command=self._on_server_update
         )
         self._server_btn.pack(anchor="w", pady=(0, 14))
 
@@ -549,6 +567,23 @@ class _App(tk.Tk):
     # Actions — header
     # ------------------------------------------------------------------
 
+    def _on_tab_changed(self, event: object = None) -> None:
+        self._refresh_selection_display()
+
+    def _refresh_selection_display(self) -> None:
+        lines: list[str] = []
+        for category, panel in self._panels.items():
+            selected = panel.get_selected()
+            if selected:
+                lines.append(f"{category.title()} ({len(selected)}): {', '.join(selected)}")
+            else:
+                lines.append(f"{category.title()} (0): none selected")
+        text = "\n".join(lines) if lines else "No content loaded."
+        self._selection_text.configure(state="normal")
+        self._selection_text.delete("1.0", "end")
+        self._selection_text.insert("end", text)
+        self._selection_text.configure(state="disabled")
+
     def _on_change_dir(self) -> None:
         chosen = filedialog.askdirectory(
             title="Select Assetto Corsa install folder", mustexist=True
@@ -558,11 +593,13 @@ class _App(tk.Tk):
         new_dir = Path(chosen)
         log.info("User changed AC install dir: %s  →  %s", self._install_dir, new_dir)
         self._install_dir = new_dir
+        save_install_dir(new_dir)
         self._install_path_label.configure(text=str(new_dir))
         for panel in self._panels.values():
             panel.destroy()
         self._panels.clear()
         self._build_panels(scan_content(new_dir))
+        self._refresh_selection_display()
         self._set_status(f"Loaded content from {new_dir}", _GREEN)
 
     def _on_change_share(self) -> None:
@@ -1552,7 +1589,7 @@ def run() -> None:
     setup_logging()
     log.info("run() called")
 
-    install_dir = find_ac_install()
+    install_dir = load_install_dir() or find_ac_install()
     if install_dir is None:
         log.info("AC install not auto-detected — prompting user")
         root = tk.Tk()
@@ -1565,6 +1602,7 @@ def run() -> None:
             log.info("User cancelled install dir selection — exiting")
             return
         install_dir = Path(chosen)
+        save_install_dir(install_dir)
 
     log.info("AC install dir: %s", install_dir)
     content = scan_content(install_dir)
