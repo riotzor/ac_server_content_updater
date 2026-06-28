@@ -27,6 +27,7 @@ from ac_updater.gui.nextcloud_panel import (
 )
 from ac_updater.install_config import load_install_dir, save_install_dir
 from ac_updater.nextcloud_client import NextcloudClient
+from ac_updater.nextcloud_config import clear_credentials, load_credentials
 from ac_updater.passphrase_store import delete_passphrase, load_passphrase, save_passphrase
 from ac_updater.selection_store import save_selection
 from ac_updater.server_names import get_display_name
@@ -275,6 +276,7 @@ class _App(tk.Tk):
         self._build_header()
         self._build_notebook(content)
         self._build_footer()
+        self.after(200, self._try_nc_auto_connect)
 
     def _apply_styles(self) -> None:
         s = ttk.Style()
@@ -608,6 +610,9 @@ class _App(tk.Tk):
         )
         self._nc_disconnect_btn.pack(side="left")
         self._nc_disconnect_btn.state(["disabled"])
+        ttk.Button(
+            nc_row, text="Forget Credentials", command=self._on_forget_nc_credentials
+        ).pack(side="left", padx=(8, 0))
 
         # AC Server row
         ssh_row = ttk.Frame(conn_lf)
@@ -858,6 +863,44 @@ class _App(tk.Tk):
             self._nc_server_combo.configure(values=[])
             self._nc_server_combo.state(["disabled"])
             self._nc_server_var.set("")
+
+    def _try_nc_auto_connect(self) -> None:
+        creds = load_credentials()
+        if creds is None:
+            return
+        url, username, password = creds
+        log.info("Attempting Nextcloud auto-connect as '%s' at %s", username, url)
+        self._nc_status_var.set("Connecting…")
+        self._nc_status_label.configure(foreground=_GRAY)
+        client = NextcloudClient(url, username, password)
+
+        def _try() -> None:
+            ok = client.test_connection()
+            if ok:
+                log.info("Nextcloud auto-connect succeeded for '%s'", username)
+
+                def _done() -> None:
+                    self._nc_client = client
+                    self._init_nc_file_panel(client)
+                    self._update_nc_status()
+
+                self.after(0, _done)
+            else:
+                log.warning(
+                    "Nextcloud auto-connect failed for '%s' — credentials may be stale", username
+                )
+                self.after(0, self._update_nc_status)
+
+        threading.Thread(target=_try, daemon=True).start()
+
+    def _on_forget_nc_credentials(self) -> None:
+        clear_credentials()
+        log.info("Nextcloud credentials cleared from OS keyring")
+        messagebox.showinfo(
+            "Credentials cleared",
+            "Nextcloud credentials have been removed from the OS keyring.",
+            parent=self,
+        )
 
     def _on_nc_connect(self) -> None:
         log.info("User opened Nextcloud connection dialog")
