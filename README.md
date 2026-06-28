@@ -6,6 +6,7 @@ A local Windows GUI tool for browsing and selecting Assetto Corsa content (cars,
 
 - Python 3.12+
 - Tkinter (ships with Python on Windows)
+- [7-Zip](https://www.7-zip.org/) — required for archive creation
 
 ## Usage
 
@@ -27,7 +28,13 @@ Two side-by-side panels list every car and track found under your AC
 | Checkbox | Toggle a single item |
 | Select All | Tick everything in that panel |
 | Deselect All | Untick everything in that panel |
+| Change... | Switch to a different AC install directory without restarting |
 | Save Selection | Write ticked items to `selections/selection.txt` |
+| Create Archive | Compress ticked content into a `.7z` file via a save dialog |
+
+**Create Archive** requires 7-Zip installed on the system. The archive preserves
+the AC content layout (`cars/<name>`, `tracks/<name>`) so it can be extracted
+directly into a server's `content/` directory.
 
 ### Selection file
 
