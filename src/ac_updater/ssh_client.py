@@ -292,6 +292,19 @@ class SshClient:
         self._exec(f"sudo systemctl restart {shlex.quote(service_name)}")
         log.info("Service restarted: %s", service_name)
 
+    def delete_from_share(
+        self,
+        category: str,
+        names: list[str],
+        share_path: str = _SHARE_PATH,
+    ) -> None:
+        """Remove content directories from the network share via SSH exec."""
+        base = f"{share_path}/content/{category}"
+        for name in names:
+            path = f"{base}/{name}"
+            self._exec(f"rm -rf {shlex.quote(path)}")
+            log.info("Deleted from share: %s/%s", category, name)
+
     def list_server_cars(self, server_dir: str) -> list[str]:
         """Return sorted car directory names from <server_dir>/content/cars/."""
         assert self._sftp is not None, "Not connected"
