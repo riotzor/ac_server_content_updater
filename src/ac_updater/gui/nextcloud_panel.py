@@ -247,7 +247,6 @@ class FileBrowserPanel(ttk.Frame):
         self._on_upload_done = None
         self._on_upload_progress = None
         self._upload_footer.pack_forget()
-        self._hide_upload_progress()
 
     # ------------------------------------------------------------------
     # Build
@@ -316,15 +315,6 @@ class FileBrowserPanel(ttk.Frame):
         self._upload_btn = ttk.Button(name_row, text="Upload Here", command=self._on_upload)
         self._upload_btn.pack(side="right")
 
-        # Upload progress (inside footer, hidden until upload starts)
-        self._prog_frame = ttk.Frame(self._upload_footer)
-        self._prog_bar = ttk.Progressbar(self._prog_frame, mode="determinate", maximum=100)
-        self._prog_bar.pack(side="left", fill="x", expand=True, padx=(0, 8))
-        self._prog_label_var = tk.StringVar()
-        ttk.Label(
-            self._prog_frame, textvariable=self._prog_label_var, width=22, anchor="e"
-        ).pack(side="left")
-
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
@@ -332,18 +322,6 @@ class FileBrowserPanel(ttk.Frame):
     def _set_status(self, text: str, color: str = "gray") -> None:
         self._status_var.set(text)
         self._status_lbl.configure(foreground=color)
-
-    def _show_upload_progress(self, sent: int, total: int) -> None:
-        pct = int(sent / total * 100) if total else 100
-        self._prog_bar.configure(value=pct)
-        self._prog_label_var.set(f"{sent / 1_048_576:.1f} / {total / 1_048_576:.1f} MB")
-        if not self._prog_frame.winfo_ismapped():
-            self._prog_frame.pack(fill="x", pady=(4, 0))
-
-    def _hide_upload_progress(self) -> None:
-        self._prog_frame.pack_forget()
-        self._prog_bar.configure(value=0)
-        self._prog_label_var.set("")
 
     def _selected(self) -> RemoteFile | None:
         sel = self._tree.selection()
@@ -513,7 +491,6 @@ class FileBrowserPanel(ttk.Frame):
         ext_progress = self._on_upload_progress
 
         def on_progress(sent: int, total: int) -> None:
-            self.after(0, lambda: self._show_upload_progress(sent, total))
             if ext_progress is not None:
                 ep = ext_progress
                 self.after(0, lambda: ep(sent, total))
@@ -524,13 +501,11 @@ class FileBrowserPanel(ttk.Frame):
                 client.upload_file(archive_path, remote, on_progress=on_progress)
                 success = True
                 log.info("Upload succeeded: %s", remote)
-                self.after(0, self._hide_upload_progress)
                 self.after(0, lambda: self._set_status(f"Uploaded ✓  →  /{remote}", _GREEN))
                 self.after(0, self._refresh)
             except (NextcloudError, OSError) as exc:
                 err = str(exc)
                 log.error("Upload failed: %s", exc)
-                self.after(0, self._hide_upload_progress)
                 self.after(0, lambda: self._set_status(f"Upload failed: {err}", _RED))
                 self.after(0, lambda: self._upload_btn.state(["!disabled"]))
             finally:

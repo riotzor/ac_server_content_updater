@@ -369,21 +369,28 @@ class _App(tk.Tk):
 
         ttk.Separator(parent, orient="horizontal").pack(fill="x", pady=(0, 8))
 
-        lbl_row = ttk.Frame(parent)
-        lbl_row.pack(fill="x", pady=(0, 4))
-        ttk.Label(lbl_row, text="Results", font=("", 9, "bold")).pack(side="left")
-        ttk.Button(lbl_row, text="Clear", command=self._clear_server_results).pack(side="right")
+        results_lf = ttk.LabelFrame(parent, text="Results", padding=4)
+        results_lf.pack(fill="x", pady=(0, 8))
 
-        result_frame = ttk.Frame(parent, relief="sunken", borderwidth=1)
-        result_frame.pack(fill="x")
+        clear_row = ttk.Frame(results_lf)
+        clear_row.pack(fill="x", pady=(0, 2))
+        ttk.Button(
+            clear_row, text="Clear", command=self._clear_server_results
+        ).pack(side="right")
+
+        result_container = ttk.Frame(results_lf)
+        result_container.pack(fill="both", expand=True)
         self._server_result = tk.Text(
-            result_frame,
+            result_container,
             height=5,
             state="disabled",
             wrap="word",
-            font=("Consolas", 9),
+            font=("Courier New", 8),
+            background="#1e1e1e",
+            foreground="#d4d4d4",
+            insertbackground="white",
         )
-        sb = ttk.Scrollbar(result_frame, command=self._server_result.yview)
+        sb = ttk.Scrollbar(result_container, orient="vertical", command=self._server_result.yview)
         self._server_result.configure(yscrollcommand=sb.set)
         self._server_result.tag_configure("error", foreground=_RED)
         self._server_result.tag_configure("warn", foreground=_ORANGE)
@@ -391,11 +398,11 @@ class _App(tk.Tk):
         sb.pack(side="right", fill="y")
         self._server_result.pack(fill="both", expand=True)
 
-        # ── SSH Deploy section ──────────────────────────────────────────────
-        ttk.Separator(parent, orient="horizontal").pack(fill="x", pady=(8, 0))
-
-        ssh_frame = ttk.LabelFrame(parent, text="SSH Deploy", padding=8)
-        ssh_frame.pack(fill="both", expand=True, pady=(6, 0))
+        # ── SSH Connection section ──────────────────────────────────────────
+        ssh_frame = ttk.LabelFrame(
+            parent, text="SSH Connection", style="Primary.TLabelframe", padding=8
+        )
+        ssh_frame.pack(fill="both", expand=True)
 
         # Connection row
         conn_row = ttk.Frame(ssh_frame)
