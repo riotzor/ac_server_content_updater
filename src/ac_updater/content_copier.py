@@ -9,7 +9,7 @@ from pathlib import Path
 log = logging.getLogger(__name__)
 
 _CAR_FILES: tuple[str, ...] = ("data.acd",)
-_TRACK_FILES: tuple[str, ...] = ("modes.ini", "data/surfaces.ini")
+_TRACK_FILES: tuple[str, ...] = ("models.ini", "data/surfaces.ini")
 
 
 @dataclass
@@ -19,24 +19,50 @@ class CopyResult:
     errors: list[str] = field(default_factory=list)
 
 
+def detect_track_layouts(install_dir: Path, track_name: str) -> list[str]:
+    """Return sorted layout names for a multi-layout track.
+
+    A multi-layout track has files named ``models_<layout>.ini`` at the root
+    of its track folder.  Returns an empty list for single-layout tracks or if
+    the track directory cannot be read.
+    """
+    track_dir = install_dir / "content" / "tracks" / track_name
+    layouts: list[str] = []
+    try:
+        for entry in track_dir.iterdir():
+            if entry.is_file() and entry.suffix == ".ini" and entry.stem.startswith("models_"):
+                layouts.append(entry.stem[len("models_"):])
+    except OSError:
+        pass
+    return sorted(layouts)
+
+
 def copy_to_share(
     install_dir: Path,
     selection: dict[str, list[str]],
     share_path: Path,
     *,
+    track_layouts: dict[str, str] | None = None,
     _copy2: Callable[[Path, Path], object] = shutil.copy2,
 ) -> CopyResult:
     """Copy selected AC content files to a network share.
 
     Copies only the server-relevant files:
-      cars   — <car>/data.acd
-      tracks — <track>/modes.ini  and  <track>/data/surfaces.ini
+      cars                  — <car>/data.acd
+      tracks (single-layout)— <track>/modes.ini  and  <track>/data/surfaces.ini
+      tracks (multi-layout) — <track>/models_<layout>.ini
+                              and <track>/<layout>/data/surfaces.ini
+
+    track_layouts maps track names to the chosen layout name for tracks that
+    have multiple layouts.  Tracks absent from track_layouts use the
+    single-layout file set.
 
     Files not present in the AC install are counted as skipped (not errors).
     OS-level copy failures are recorded in CopyResult.errors.
     """
     result = CopyResult()
     content_dir = install_dir / "content"
+    layouts = track_layouts or {}
     total_items = sum(len(v) for v in selection.values())
     log.info(
         "Starting server content copy: share=%s  items=%d", share_path, total_items
@@ -52,7 +78,15 @@ def copy_to_share(
             )
 
     for track in selection.get("tracks", []):
-        for rel in _TRACK_FILES:
+        layout = layouts.get(track)
+        if layout is not None:
+            rel_files: tuple[str, ...] = (
+                f"models_{layout}.ini",
+                f"{layout}/data/surfaces.ini",
+            )
+        else:
+            rel_files = _TRACK_FILES
+        for rel in rel_files:
             _copy_file(
                 src=content_dir / "tracks" / track / rel,
                 dst=share_path / "content" / "tracks" / track / rel,
@@ -84,6 +118,20 @@ def _copy_file(
         copy2(src, dst)
         log.debug("Copied: %s  →  %s", src, dst)
         result.copied += 1
+        if dst.name == "surfaces.ini":
+            _patch_surfaces_ini(dst)
     except OSError as exc:
         log.error("Failed to copy %s → %s: %s", src, dst, exc)
         result.errors.append(f"{src.name}: {exc}")
+
+
+def _patch_surfaces_ini(path: Path) -> None:
+    """Replace the first [SURFACE_0] with [CSPFACE_0] in a local surfaces.ini."""
+    try:
+        content = path.read_text(encoding="utf-8", errors="replace")
+        new_content = content.replace("[SURFACE_0]", "[CSPFACE_0]", 1)
+        if new_content != content:
+            path.write_text(new_content, encoding="utf-8")
+            log.debug("Patched surfaces.ini [SURFACE_0] → [CSPFACE_0]: %s", path)
+    except OSError as exc:
+        log.warning("Could not patch surfaces.ini %s: %s", path, exc)

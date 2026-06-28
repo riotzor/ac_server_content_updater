@@ -1,7 +1,7 @@
 from pathlib import Path
 from unittest.mock import MagicMock
 
-from ac_updater.content_copier import copy_to_share
+from ac_updater.content_copier import copy_to_share, detect_track_layouts
 
 
 def _make_ac_tree(root: Path) -> Path:
@@ -14,14 +14,45 @@ def _make_ac_tree(root: Path) -> Path:
 
     track = content / "tracks" / "monza"
     (track / "data").mkdir(parents=True)
-    (track / "modes.ini").write_text("modes", encoding="utf-8")
+    (track / "models.ini").write_text("modes", encoding="utf-8")
     (track / "data" / "surfaces.ini").write_text("surfaces", encoding="utf-8")
 
     (content / "tracks" / "spa").mkdir(parents=True)
-    # spa has modes.ini but no surfaces.ini
-    (content / "tracks" / "spa" / "modes.ini").write_text("modes", encoding="utf-8")
+    # spa has models.ini but no surfaces.ini
+    (content / "tracks" / "spa" / "models.ini").write_text("modes", encoding="utf-8")
+
+    # ks_vallunga — multi-layout track
+    # models_<layout>.ini files sit at the track root; layout dirs hold surfaces.ini
+    vallunga = content / "tracks" / "ks_vallunga"
+    for layout in ("classic_circuit", "club_circuit", "extended_circuit"):
+        (vallunga / layout / "data").mkdir(parents=True)
+        (vallunga / f"models_{layout}.ini").write_text(f"model={layout}", encoding="utf-8")
+        (vallunga / layout / "data" / "surfaces.ini").write_text(
+            "[SURFACE_0]\nKEY=VALUE\n", encoding="utf-8"
+        )
 
     return root
+
+
+# ---------------------------------------------------------------------------
+# detect_track_layouts
+# ---------------------------------------------------------------------------
+
+
+def test_detect_layouts_returns_sorted_layout_names(tmp_path: Path) -> None:
+    ac = _make_ac_tree(tmp_path / "ac")
+    layouts = detect_track_layouts(ac, "ks_vallunga")
+    assert layouts == ["classic_circuit", "club_circuit", "extended_circuit"]
+
+
+def test_detect_layouts_returns_empty_for_single_layout_track(tmp_path: Path) -> None:
+    ac = _make_ac_tree(tmp_path / "ac")
+    assert detect_track_layouts(ac, "monza") == []
+
+
+def test_detect_layouts_returns_empty_for_missing_track(tmp_path: Path) -> None:
+    ac = _make_ac_tree(tmp_path / "ac")
+    assert detect_track_layouts(ac, "nonexistent") == []
 
 
 # ---------------------------------------------------------------------------
@@ -64,7 +95,7 @@ def test_copy_track_copies_modes_ini(tmp_path: Path) -> None:
 
     copy_to_share(ac, {"tracks": ["monza"]}, share)
 
-    assert (share / "content" / "tracks" / "monza" / "modes.ini").exists()
+    assert (share / "content" / "tracks" / "monza" / "models.ini").exists()
 
 
 def test_copy_track_copies_surfaces_ini(tmp_path: Path) -> None:
@@ -82,7 +113,7 @@ def test_copy_track_skips_missing_surfaces_ini(tmp_path: Path) -> None:
 
     result = copy_to_share(ac, {"tracks": ["spa"]}, share)
 
-    assert result.copied == 1  # modes.ini copied
+    assert result.copied == 1  # models.ini copied
     assert result.skipped == 1  # surfaces.ini missing
 
 
@@ -159,3 +190,146 @@ def test_injectable_copy_fn_called_with_correct_paths(tmp_path: Path) -> None:
     expected_src = ac / "content" / "cars" / "ferrari_458" / "data.acd"
     expected_dst = share / "content" / "cars" / "ferrari_458" / "data.acd"
     mock_copy.assert_called_once_with(expected_src, expected_dst)
+
+
+# ---------------------------------------------------------------------------
+# Multi-layout tracks
+# ---------------------------------------------------------------------------
+
+
+def test_copy_multi_layout_track_copies_model_ini(tmp_path: Path) -> None:
+    ac = _make_ac_tree(tmp_path / "ac")
+    share = tmp_path / "share"
+
+    copy_to_share(
+        ac,
+        {"tracks": ["ks_vallunga"]},
+        share,
+        track_layouts={"ks_vallunga": "classic_circuit"},
+    )
+
+    expected = share / "content" / "tracks" / "ks_vallunga" / "models_classic_circuit.ini"
+    assert expected.exists()
+
+
+def test_copy_multi_layout_track_copies_layout_surfaces_ini(tmp_path: Path) -> None:
+    ac = _make_ac_tree(tmp_path / "ac")
+    share = tmp_path / "share"
+
+    copy_to_share(
+        ac,
+        {"tracks": ["ks_vallunga"]},
+        share,
+        track_layouts={"ks_vallunga": "club_circuit"},
+    )
+
+    expected = (
+        share / "content" / "tracks" / "ks_vallunga" / "club_circuit" / "data" / "surfaces.ini"
+    )
+    assert expected.exists()
+
+
+def test_copy_multi_layout_track_does_not_copy_modes_ini(tmp_path: Path) -> None:
+    ac = _make_ac_tree(tmp_path / "ac")
+    share = tmp_path / "share"
+
+    copy_to_share(
+        ac,
+        {"tracks": ["ks_vallunga"]},
+        share,
+        track_layouts={"ks_vallunga": "classic_circuit"},
+    )
+
+    assert not (share / "content" / "tracks" / "ks_vallunga" / "models.ini").exists()
+
+
+def test_copy_multi_layout_track_copies_exactly_two_files(tmp_path: Path) -> None:
+    ac = _make_ac_tree(tmp_path / "ac")
+    share = tmp_path / "share"
+
+    result = copy_to_share(
+        ac,
+        {"tracks": ["ks_vallunga"]},
+        share,
+        track_layouts={"ks_vallunga": "classic_circuit"},
+    )
+
+    assert result.copied == 2
+    assert result.skipped == 0
+
+
+def test_track_without_layout_in_map_uses_single_layout_files(tmp_path: Path) -> None:
+    """A track absent from track_layouts still uses models.ini / surfaces.ini."""
+    ac = _make_ac_tree(tmp_path / "ac")
+    share = tmp_path / "share"
+
+    copy_to_share(
+        ac,
+        {"tracks": ["monza"]},
+        share,
+        track_layouts={},  # monza not in map
+    )
+
+    assert (share / "content" / "tracks" / "monza" / "models.ini").exists()
+    assert (share / "content" / "tracks" / "monza" / "data" / "surfaces.ini").exists()
+
+
+# ---------------------------------------------------------------------------
+# surfaces.ini CSPFACE patch
+# ---------------------------------------------------------------------------
+
+
+def test_surfaces_ini_patched_on_single_layout_copy(tmp_path: Path) -> None:
+    ac = _make_ac_tree(tmp_path / "ac")
+    # Put [SURFACE_0] in surfaces.ini
+    surfaces = ac / "content" / "tracks" / "monza" / "data" / "surfaces.ini"
+    surfaces.write_text("[SURFACE_0]\nKEY=VALUE\n", encoding="utf-8")
+    share = tmp_path / "share"
+
+    copy_to_share(ac, {"tracks": ["monza"]}, share)
+
+    dst = share / "content" / "tracks" / "monza" / "data" / "surfaces.ini"
+    assert dst.read_text(encoding="utf-8").startswith("[CSPFACE_0]")
+
+
+def test_surfaces_ini_patched_on_multi_layout_copy(tmp_path: Path) -> None:
+    ac = _make_ac_tree(tmp_path / "ac")
+    share = tmp_path / "share"
+
+    copy_to_share(
+        ac,
+        {"tracks": ["ks_vallunga"]},
+        share,
+        track_layouts={"ks_vallunga": "classic_circuit"},
+    )
+
+    dst = (
+        share / "content" / "tracks" / "ks_vallunga" / "classic_circuit" / "data" / "surfaces.ini"
+    )
+    assert dst.read_text(encoding="utf-8").startswith("[CSPFACE_0]")
+
+
+def test_surfaces_ini_patch_is_first_occurrence_only(tmp_path: Path) -> None:
+    ac = _make_ac_tree(tmp_path / "ac")
+    surfaces = ac / "content" / "tracks" / "monza" / "data" / "surfaces.ini"
+    surfaces.write_text("[SURFACE_0]\n[SURFACE_0]\n", encoding="utf-8")
+    share = tmp_path / "share"
+
+    copy_to_share(ac, {"tracks": ["monza"]}, share)
+
+    content = (share / "content" / "tracks" / "monza" / "data" / "surfaces.ini").read_text(
+        encoding="utf-8"
+    )
+    assert content == "[CSPFACE_0]\n[SURFACE_0]\n"
+
+
+def test_surfaces_ini_already_patched_is_unchanged(tmp_path: Path) -> None:
+    ac = _make_ac_tree(tmp_path / "ac")
+    surfaces = ac / "content" / "tracks" / "monza" / "data" / "surfaces.ini"
+    surfaces.write_text("[CSPFACE_0]\nKEY=VALUE\n", encoding="utf-8")
+    share = tmp_path / "share"
+
+    copy_to_share(ac, {"tracks": ["monza"]}, share)
+
+    dst = share / "content" / "tracks" / "monza" / "data" / "surfaces.ini"
+    assert dst.read_text(encoding="utf-8").startswith("[CSPFACE_0]")
