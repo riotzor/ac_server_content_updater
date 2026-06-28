@@ -6,6 +6,7 @@ import threading
 import tkinter as tk
 from pathlib import Path
 from tkinter import messagebox, simpledialog, ttk
+from urllib.parse import urlparse
 
 from ac_updater.nextcloud_client import NextcloudClient, NextcloudError, RemoteFile
 from ac_updater.nextcloud_config import load_credentials, save_credentials
@@ -80,6 +81,17 @@ class _ConnectDialog(tk.Toplevel):
         client = self._make_client()
         if client is None:
             return
+        scheme = urlparse(self._url_var.get().strip()).scheme.lower()
+        if scheme != "https":
+            if not messagebox.askyesno(
+                "Insecure connection",
+                "The URL does not use HTTPS.\n\n"
+                "Your credentials will be sent without encryption.\n\n"
+                "Continue anyway?",
+                icon="warning",
+                parent=self,
+            ):
+                return
         self._status_var.set("Testing connection…")
         self._status_lbl.configure(foreground="gray")
         self._connect_btn.state(["disabled"])

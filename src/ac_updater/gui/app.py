@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 import tempfile
 import threading
@@ -272,7 +273,9 @@ class _App(tk.Tk):
         install_dir = self._install_dir
         nc_client = self._nc_client
         default_name = _default_archive_name(selection)
-        tmp_path = Path(tempfile.mktemp(suffix=".7z"))
+        _fd, _tmp = tempfile.mkstemp(suffix=".7z")
+        os.close(_fd)
+        tmp_path = Path(_tmp)
 
         self._start_progress("Creating archive…")
         self._disable_buttons()
