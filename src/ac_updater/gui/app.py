@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import functools
-from collections.abc import Callable
 import logging
 import os
 import subprocess
 import tempfile
 import threading
 import tkinter as tk
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
