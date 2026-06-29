@@ -454,18 +454,9 @@ class _App(tk.Tk):
 
         ttk.Separator(parent, orient="horizontal").pack(fill="x", pady=(0, 6))
 
-        # ── Vertical PanedWindow: top = results log | bottom = deploy + columns
-        vpaned = ttk.PanedWindow(parent, orient="vertical")
-        vpaned.pack(fill="both", expand=True)
-
-        top_pane = ttk.Frame(vpaned)
-        vpaned.add(top_pane, weight=1)
-        bottom_pane = ttk.Frame(vpaned)
-        vpaned.add(bottom_pane, weight=3)
-
-        # ── Top pane: results log ───────────────────────────────────────────
-        results_lf = ttk.LabelFrame(top_pane, text="Results", padding=4)
-        results_lf.pack(fill="both", expand=True)
+        # ── Results log ─────────────────────────────────────────────────────
+        results_lf = ttk.LabelFrame(parent, text="Results", padding=4)
+        results_lf.pack(fill="x", pady=(0, 6))
 
         clear_row = ttk.Frame(results_lf)
         clear_row.pack(fill="x", pady=(0, 2))
@@ -493,9 +484,9 @@ class _App(tk.Tk):
         sb.pack(side="right", fill="y")
         self._server_result.pack(fill="both", expand=True)
 
-        # ── Bottom pane: deploy row + two-column content area ───────────────
-        deploy_row = ttk.Frame(bottom_pane)
-        deploy_row.pack(fill="x", pady=(4, 4))
+        # ── Deploy row ───────────────────────────────────────────────────────
+        deploy_row = ttk.Frame(parent)
+        deploy_row.pack(fill="x", pady=(0, 4))
         ttk.Label(deploy_row, text="Server:").pack(side="left")
         ttk.Label(deploy_row, textvariable=self._ssh_server_var, foreground=_GRAY).pack(
             side="left", padx=(4, 12)
@@ -507,7 +498,7 @@ class _App(tk.Tk):
         self._ssh_deploy_btn.state(["disabled"])
 
         # ── Two-column content area: share (left) | server management (right)
-        columns = ttk.Frame(bottom_pane)
+        columns = ttk.Frame(parent)
         columns.pack(fill="both", expand=True)
         columns.grid_rowconfigure(0, weight=1)
         columns.grid_columnconfigure(0, weight=1)
