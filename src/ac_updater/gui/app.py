@@ -7,6 +7,7 @@ import subprocess
 import tempfile
 import threading
 import tkinter as tk
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
@@ -48,11 +49,30 @@ _GRAY = "gray"
 
 
 class _ChecklistPanel(ttk.LabelFrame):
-    """Scrollable checklist for a single content category."""
+    """Scrollable, filterable checklist for a single content category."""
 
-    def __init__(self, parent: tk.Widget, title: str, items: list[str]) -> None:
+    def __init__(
+        self,
+        parent: tk.Widget,
+        title: str,
+        items: list[str],
+        on_change: Callable[[], None] | None = None,
+    ) -> None:
         super().__init__(parent, text=title, padding=4)
         self._vars: dict[str, tk.BooleanVar] = {}
+        self._buttons: dict[str, ttk.Checkbutton] = {}
+        self._on_change = on_change
+
+        filter_row = ttk.Frame(self)
+        filter_row.pack(fill="x", pady=(0, 2))
+        ttk.Label(filter_row, text="Filter:").pack(side="left", padx=(0, 4))
+        self._filter_var = tk.StringVar()
+        self._filter_var.trace_add("write", lambda *_: self._apply_filter())
+        ttk.Entry(filter_row, textvariable=self._filter_var).pack(
+            side="left", fill="x", expand=True, padx=(0, 6)
+        )
+        self._count_label = ttk.Label(filter_row, text="0 / 0 selected", foreground=_GRAY)
+        self._count_label.pack(side="right")
 
         btn_row = ttk.Frame(self)
         btn_row.pack(fill="x", pady=(0, 4))
@@ -81,11 +101,36 @@ class _ChecklistPanel(ttk.LabelFrame):
         self._inner.bind("<MouseWheel>", self._on_mousewheel)
 
         for item in items:
-            var = tk.BooleanVar(value=False)
-            self._vars[item] = var
-            cb = ttk.Checkbutton(self._inner, text=item, variable=var)
-            cb.pack(anchor="w", pady=1)
-            cb.bind("<MouseWheel>", self._on_mousewheel)
+            self._add_item(item, False)
+        self._update_count()
+
+    def _add_item(self, name: str, checked: bool) -> None:
+        var = tk.BooleanVar(value=checked)
+        var.trace_add("write", lambda *_: self._on_item_change())
+        self._vars[name] = var
+        cb = ttk.Checkbutton(self._inner, text=name, variable=var)
+        cb.pack(anchor="w", pady=1)
+        cb.bind("<MouseWheel>", self._on_mousewheel)
+        self._buttons[name] = cb
+
+    def _apply_filter(self) -> None:
+        query = self._filter_var.get().lower()
+        for name, cb in self._buttons.items():
+            if query in name.lower():
+                cb.pack(anchor="w", pady=1)
+            else:
+                cb.pack_forget()
+        self._canvas.configure(scrollregion=self._canvas.bbox("all"))
+
+    def _on_item_change(self) -> None:
+        self._update_count()
+        if self._on_change:
+            self._on_change()
+
+    def _update_count(self) -> None:
+        selected = len(self.get_selected())
+        total = len(self._vars)
+        self._count_label.configure(text=f"{selected} / {total} selected")
 
     def _on_mousewheel(self, event: tk.Event) -> None:
         self._canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
@@ -103,12 +148,11 @@ class _ChecklistPanel(ttk.LabelFrame):
         for widget in self._inner.winfo_children():
             widget.destroy()
         self._vars.clear()
+        self._buttons.clear()
+        self._filter_var.set("")
         for item in items:
-            var = tk.BooleanVar(value=default_checked)
-            self._vars[item] = var
-            cb = ttk.Checkbutton(self._inner, text=item, variable=var)
-            cb.pack(anchor="w", pady=1)
-            cb.bind("<MouseWheel>", self._on_mousewheel)
+            self._add_item(item, default_checked)
+        self._update_count()
         self._canvas.configure(scrollregion=self._canvas.bbox("all"))
 
     def get_selected(self) -> list[str]:
@@ -278,6 +322,7 @@ class _App(tk.Tk):
         self._current_server_name: str = ""
         self._nc_file_panel: FileBrowserPanel | None = None
         self._nc_log_handler: TkLogHandler | None = None
+        self._nc_selection_var = tk.StringVar(value="nothing selected")
 
         log.info("App window created: install_dir=%s  share=%s", install_dir, self._share_path)
 
@@ -344,7 +389,12 @@ class _App(tk.Tk):
 
     def _build_panels(self, content: dict[str, list[str]]) -> None:
         for category, items in content.items():
-            panel = _ChecklistPanel(self._panel_area, title=category.title(), items=items)
+            panel = _ChecklistPanel(
+                self._panel_area,
+                title=category.title(),
+                items=items,
+                on_change=self._refresh_selection_display,
+            )
             panel.pack(side="left", fill="both", expand=True, padx=(0, 4))
             self._panels[category] = panel
 
@@ -643,6 +693,14 @@ class _App(tk.Tk):
         )
         self._nc_server_combo.pack(side="left", padx=(4, 0))
         self._nc_server_combo.state(["disabled"])
+
+        # ── Content Browser selection summary ────────────────────────────
+        sel_row = ttk.Frame(parent)
+        sel_row.pack(fill="x", pady=(0, 6))
+        ttk.Label(sel_row, text="Content Browser:", font=("", 9, "bold")).pack(side="left")
+        ttk.Label(sel_row, textvariable=self._nc_selection_var, foreground=_GRAY).pack(
+            side="left", padx=(6, 0)
+        )
 
         # ── Paned: left = packs/progress/log · right = file browser ──────
         paned = ttk.PanedWindow(parent, orient="horizontal")
@@ -982,10 +1040,12 @@ class _App(tk.Tk):
 
     def _refresh_selection_display(self) -> None:
         lines: list[str] = []
+        counts: list[str] = []
         for category, panel in self._panels.items():
             selected = panel.get_selected()
             if selected:
                 lines.append(f"{category.title()} ({len(selected)}): {', '.join(selected)}")
+                counts.append(f"{len(selected)} {category}")
             else:
                 lines.append(f"{category.title()} (0): none selected")
         text = "\n".join(lines) if lines else "No content loaded."
@@ -993,6 +1053,7 @@ class _App(tk.Tk):
         self._selection_text.delete("1.0", "end")
         self._selection_text.insert("end", text)
         self._selection_text.configure(state="disabled")
+        self._nc_selection_var.set(", ".join(counts) if counts else "nothing selected")
 
     def _on_change_dir(self) -> None:
         chosen = filedialog.askdirectory(
