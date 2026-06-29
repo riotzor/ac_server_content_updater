@@ -2269,6 +2269,7 @@ class _App(tk.Tk):
         deployed_cars = [name for cat, name in result.deployed_items if cat == "cars"]
         if not deployed_cars:
             self._ssh_deploy_btn.state(["!disabled"])
+            self._on_server_selected()
             return
 
         service = f"{server_name}.service"
@@ -2281,6 +2282,7 @@ class _App(tk.Tk):
             self._on_stop_and_update(server_name, server_label, service)
         else:
             self._ssh_deploy_btn.state(["!disabled"])
+            self._on_server_selected()
 
     def _on_stop_and_update(
         self,
