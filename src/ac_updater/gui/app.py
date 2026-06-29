@@ -77,11 +77,18 @@ class _ChecklistPanel(ttk.LabelFrame):
         self._canvas.bind(
             "<Configure>", lambda e: self._canvas.itemconfig(win_id, width=e.width)
         )
+        self._canvas.bind("<MouseWheel>", self._on_mousewheel)
+        self._inner.bind("<MouseWheel>", self._on_mousewheel)
 
         for item in items:
             var = tk.BooleanVar(value=False)
             self._vars[item] = var
-            ttk.Checkbutton(self._inner, text=item, variable=var).pack(anchor="w", pady=1)
+            cb = ttk.Checkbutton(self._inner, text=item, variable=var)
+            cb.pack(anchor="w", pady=1)
+            cb.bind("<MouseWheel>", self._on_mousewheel)
+
+    def _on_mousewheel(self, event: tk.Event) -> None:
+        self._canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
 
     def _select_all(self) -> None:
         for var in self._vars.values():
@@ -99,7 +106,9 @@ class _ChecklistPanel(ttk.LabelFrame):
         for item in items:
             var = tk.BooleanVar(value=default_checked)
             self._vars[item] = var
-            ttk.Checkbutton(self._inner, text=item, variable=var).pack(anchor="w", pady=1)
+            cb = ttk.Checkbutton(self._inner, text=item, variable=var)
+            cb.pack(anchor="w", pady=1)
+            cb.bind("<MouseWheel>", self._on_mousewheel)
         self._canvas.configure(scrollregion=self._canvas.bbox("all"))
 
     def get_selected(self) -> list[str]:
