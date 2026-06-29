@@ -311,6 +311,7 @@ class _App(tk.Tk):
         super().__init__()
         self.title(_WINDOW_TITLE)
         self.geometry(_WINDOW_SIZE)
+        self.minsize(900, 580)
         self.resizable(True, True)
         self._install_dir = install_dir
         self._share_path = load_share_path()
@@ -425,15 +426,14 @@ class _App(tk.Tk):
             self._panels[category] = panel
 
     def _build_server_tab(self, parent: ttk.Frame) -> None:
-        # ── Share copy section ──────────────────────────────────────────────
+        # ── Share copy section (fixed, above the paned split) ──────────────
         share_row = ttk.Frame(parent)
-        share_row.pack(fill="x", pady=(0, 12))
+        share_row.pack(fill="x", pady=(0, 8))
         ttk.Label(share_row, text="Network Share:", font=("", 9, "bold")).pack(side="left")
         self._share_path_label = ttk.Label(share_row, text=str(self._share_path))
         self._share_path_label.pack(side="left", padx=(6, 4))
         ttk.Button(share_row, text="Change...", command=self._on_change_share).pack(side="left")
 
-        # Selected content summary (refreshed from the Content Browser)
         sel_lf = ttk.LabelFrame(parent, text="Content Browser selection", padding=4)
         sel_lf.pack(fill="x", pady=(0, 6))
         self._selection_text = tk.Text(
@@ -450,12 +450,22 @@ class _App(tk.Tk):
         self._server_btn = ttk.Button(
             parent, text="Copy to Share", command=self._on_server_update
         )
-        self._server_btn.pack(anchor="w", pady=(0, 14))
+        self._server_btn.pack(anchor="w", pady=(0, 8))
 
-        ttk.Separator(parent, orient="horizontal").pack(fill="x", pady=(0, 8))
+        ttk.Separator(parent, orient="horizontal").pack(fill="x", pady=(0, 6))
 
-        results_lf = ttk.LabelFrame(parent, text="Results", padding=4)
-        results_lf.pack(fill="x", pady=(0, 8))
+        # ── Vertical PanedWindow: top = results log | bottom = deploy + columns
+        vpaned = ttk.PanedWindow(parent, orient="vertical")
+        vpaned.pack(fill="both", expand=True)
+
+        top_pane = ttk.Frame(vpaned)
+        vpaned.add(top_pane, weight=1)
+        bottom_pane = ttk.Frame(vpaned)
+        vpaned.add(bottom_pane, weight=3)
+
+        # ── Top pane: results log ───────────────────────────────────────────
+        results_lf = ttk.LabelFrame(top_pane, text="Results", padding=4)
+        results_lf.pack(fill="both", expand=True)
 
         clear_row = ttk.Frame(results_lf)
         clear_row.pack(fill="x", pady=(0, 2))
@@ -467,7 +477,7 @@ class _App(tk.Tk):
         result_container.pack(fill="both", expand=True)
         self._server_result = tk.Text(
             result_container,
-            height=5,
+            height=4,
             state="disabled",
             wrap="word",
             font=("Courier New", 8),
@@ -483,9 +493,9 @@ class _App(tk.Tk):
         sb.pack(side="right", fill="y")
         self._server_result.pack(fill="both", expand=True)
 
-        # ── Deploy row (server selected in Connections tab) ─────────────────
-        deploy_row = ttk.Frame(parent)
-        deploy_row.pack(fill="x", pady=(0, 4))
+        # ── Bottom pane: deploy row + two-column content area ───────────────
+        deploy_row = ttk.Frame(bottom_pane)
+        deploy_row.pack(fill="x", pady=(4, 4))
         ttk.Label(deploy_row, text="Server:").pack(side="left")
         ttk.Label(deploy_row, textvariable=self._ssh_server_var, foreground=_GRAY).pack(
             side="left", padx=(4, 12)
@@ -497,7 +507,7 @@ class _App(tk.Tk):
         self._ssh_deploy_btn.state(["disabled"])
 
         # ── Two-column content area: share (left) | server management (right)
-        columns = ttk.Frame(parent)
+        columns = ttk.Frame(bottom_pane)
         columns.pack(fill="both", expand=True)
         columns.grid_rowconfigure(0, weight=1)
         columns.grid_columnconfigure(0, weight=1)
@@ -541,8 +551,8 @@ class _App(tk.Tk):
             columns, text="On Server", style="Primary.TLabelframe", padding=4
         )
         server_col.grid(row=0, column=1, sticky="nsew")
+        server_col.grid_rowconfigure(1, weight=1)
         server_col.grid_rowconfigure(2, weight=1)
-        server_col.grid_rowconfigure(3, weight=1)
         server_col.grid_columnconfigure(0, weight=1)
 
         self._server_mgmt_placeholder = ttk.Label(
