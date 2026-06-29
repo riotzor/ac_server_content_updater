@@ -531,6 +531,8 @@ class _App(tk.Tk):
         # leaving share_header (and the Refresh button) untouched on reconnect.
         share_content = ttk.Frame(share_col)
         share_content.pack(fill="both", expand=True)
+        share_content.grid_rowconfigure(0, weight=1)
+        share_content.grid_columnconfigure(0, weight=1)
         self._ssh_content_frame = share_content
 
         self._ssh_placeholder = ttk.Label(
@@ -541,7 +543,7 @@ class _App(tk.Tk):
             cursor="hand2",
             justify="center",
         )
-        self._ssh_placeholder.pack(expand=True)
+        self._ssh_placeholder.grid(row=0, column=0)
         self._ssh_placeholder.bind(
             "<Button-1>", lambda _e: self._nb.select(3)  # type: ignore[no-untyped-call]
         )
@@ -1582,22 +1584,37 @@ class _App(tk.Tk):
 
         has_content = any(content.values())
         if has_content:
-            self._ssh_placeholder.pack_forget()
+            self._ssh_placeholder.grid_remove()
+            row = 0
             for category, items in content.items():
                 if items:
-                    cat_frame = ttk.Frame(self._ssh_content_frame)
-                    cat_frame.pack(side="left", fill="both", expand=True, padx=(0, 4))
-                    panel = _ChecklistPanel(cat_frame, title=category.title(), items=items)
-                    panel.pack(fill="both", expand=True)
+                    self._ssh_content_frame.grid_rowconfigure(row, weight=1)
+                    cat_lf = ttk.LabelFrame(
+                        self._ssh_content_frame,
+                        text=category.title(),
+                        style="Secondary.TLabelframe",
+                        padding=4,
+                    )
+                    cat_lf.grid(row=row, column=0, sticky="nsew", pady=(0, 4))
+                    cat_lf.grid_rowconfigure(0, weight=1)
+                    cat_lf.grid_columnconfigure(0, weight=1)
+                    panel = _ChecklistPanel(cat_lf, title="", items=items)
+                    panel.grid(row=0, column=0, sticky="nsew")
                     ttk.Button(
-                        cat_frame,
+                        cat_lf,
                         text="Delete from Share",
                         command=functools.partial(self._on_delete_from_share, category),
-                    ).pack(anchor="w", pady=(4, 0))
+                    ).grid(row=1, column=0, sticky="w", pady=(4, 0))
                     self._ssh_panels[category] = panel
+                    row += 1
+            for i in range(row, row + 3):
+                self._ssh_content_frame.grid_rowconfigure(i, weight=0)
         else:
+            self._ssh_content_frame.grid_rowconfigure(0, weight=1)
+            for i in range(1, 4):
+                self._ssh_content_frame.grid_rowconfigure(i, weight=0)
             self._ssh_placeholder.configure(text="No content found on the share")
-            self._ssh_placeholder.pack(expand=True)
+            self._ssh_placeholder.grid(row=0, column=0)
 
     def _on_delete_from_share(self, category: str) -> None:
         if self._ssh_client is None:
@@ -1716,7 +1733,10 @@ class _App(tk.Tk):
         self._ssh_server_combo.set("")
         self._ssh_server_combo.state(["disabled"])
         self._ssh_placeholder.configure(text="Connect to browse content on the share")
-        self._ssh_placeholder.pack(expand=True)
+        self._ssh_content_frame.grid_rowconfigure(0, weight=1)
+        for _i in range(1, 4):
+            self._ssh_content_frame.grid_rowconfigure(_i, weight=0)
+        self._ssh_placeholder.grid(row=0, column=0)
         self._clear_server_mgmt_panel()
         self._set_status("SSH disconnected", _GRAY)
 
