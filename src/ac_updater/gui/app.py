@@ -509,10 +509,27 @@ class _App(tk.Tk):
         )
         share_col.grid(row=0, column=0, sticky="nsew", padx=(0, 4))
         self._ssh_content_frame = share_col
+
+        share_header = ttk.Frame(share_col)
+        share_header.pack(fill="x", pady=(0, 4))
+        self._share_refresh_btn = ttk.Button(
+            share_header, text="Refresh", command=self._refresh_share_content, width=8
+        )
+        self._share_refresh_btn.pack(side="right")
+        self._share_refresh_btn.state(["disabled"])
+
         self._ssh_placeholder = ttk.Label(
-            share_col, text="Connect to browse content on the share", foreground=_GRAY
+            share_col,
+            text="Connect to browse content on the share",
+            foreground="#3b82f6",
+            font=("", 9, "underline"),
+            cursor="hand2",
+            justify="center",
         )
         self._ssh_placeholder.pack(expand=True)
+        self._ssh_placeholder.bind(
+            "<Button-1>", lambda _e: self._nb.select(3)  # type: ignore[no-untyped-call]
+        )
 
         # Right: content on the selected server
         server_col = ttk.LabelFrame(
@@ -1391,6 +1408,8 @@ class _App(tk.Tk):
             self._append_server_result(summary, "ok")
             self._set_status(f"Copied {result.copied} file(s) to {share_path}", _GREEN)
 
+        self._refresh_share_content()
+
     # ------------------------------------------------------------------
     # Actions — SSH Deploy section
     # ------------------------------------------------------------------
@@ -1640,6 +1659,7 @@ class _App(tk.Tk):
             label = f"{get_display_name(srv)}  [{srv}]"
             self._ssh_server_map[label] = srv
             display_list.append(label)
+        self._share_refresh_btn.state(["!disabled"])
         self._ssh_server_combo["values"] = display_list
         self._ssh_server_combo.state(["!disabled"])
         if display_list:
@@ -1676,6 +1696,7 @@ class _App(tk.Tk):
         self._ssh_panels.clear()
         self._ssh_server_map.clear()
         self._current_server_name = ""
+        self._share_refresh_btn.state(["disabled"])
         self._ssh_server_combo["values"] = []
         self._ssh_server_combo.set("")
         self._ssh_server_combo.state(["disabled"])
@@ -1699,6 +1720,20 @@ class _App(tk.Tk):
             except Exception as exc:
                 err = str(exc)
                 self.after(0, lambda: self._on_ssh_connect_failed(err))
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _refresh_share_content(self) -> None:
+        if self._ssh_client is None or not self._ssh_client.is_connected:
+            return
+        client = self._ssh_client
+
+        def _worker() -> None:
+            try:
+                content = client.list_share_content()
+                self.after(0, lambda: self._rebuild_share_panels(content))
+            except Exception as exc:
+                log.error("Failed to refresh share content: %s", exc)
 
         threading.Thread(target=_worker, daemon=True).start()
 
