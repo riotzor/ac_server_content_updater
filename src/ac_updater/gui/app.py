@@ -508,7 +508,6 @@ class _App(tk.Tk):
             columns, text="From Share", style="Primary.TLabelframe", padding=4
         )
         share_col.grid(row=0, column=0, sticky="nsew", padx=(0, 4))
-        self._ssh_content_frame = share_col
 
         share_header = ttk.Frame(share_col)
         share_header.pack(fill="x", pady=(0, 4))
@@ -518,8 +517,14 @@ class _App(tk.Tk):
         self._share_refresh_btn.pack(side="right")
         self._share_refresh_btn.state(["disabled"])
 
+        # _ssh_content_frame is the inner frame; _rebuild_share_panels only touches this,
+        # leaving share_header (and the Refresh button) untouched on reconnect.
+        share_content = ttk.Frame(share_col)
+        share_content.pack(fill="both", expand=True)
+        self._ssh_content_frame = share_content
+
         self._ssh_placeholder = ttk.Label(
-            share_col,
+            share_content,
             text="Connect to browse content on the share",
             foreground="#3b82f6",
             font=("", 9, "underline"),
