@@ -324,6 +324,15 @@ class _App(tk.Tk):
         self._nc_log_handler: TkLogHandler | None = None
         self._nc_selection_var = tk.StringVar(value="nothing selected")
 
+        # SSH / NC StringVars initialised here so header and all tabs can reference them
+        ssh_host, ssh_user, ssh_key = load_ssh_config()
+        self._ssh_host_var = tk.StringVar(value=ssh_host)
+        self._ssh_user_var = tk.StringVar(value=ssh_user)
+        self._ssh_key_var = tk.StringVar(value=ssh_key)
+        self._ssh_status_var = tk.StringVar(value="Not connected")
+        self._ssh_server_var = tk.StringVar()
+        self._nc_status_var = tk.StringVar(value="Not connected")
+
         log.info("App window created: install_dir=%s  share=%s", install_dir, self._share_path)
 
         self._apply_styles()
@@ -350,6 +359,20 @@ class _App(tk.Tk):
         self._install_path_label.pack(side="left", padx=(6, 4))
         ttk.Button(header, text="Change...", command=self._on_change_dir).pack(side="left")
 
+        # Connection status pills — always visible on the right
+        ttk.Separator(header, orient="vertical").pack(side="right", fill="y", padx=(12, 0))
+        self._hdr_nc_label = ttk.Label(
+            header, textvariable=self._nc_status_var, foreground=_RED
+        )
+        self._hdr_nc_label.pack(side="right")
+        ttk.Label(header, text="NC:", font=("", 9, "bold")).pack(side="right", padx=(8, 4))
+        ttk.Separator(header, orient="vertical").pack(side="right", fill="y", padx=(12, 0))
+        self._hdr_ssh_label = ttk.Label(
+            header, textvariable=self._ssh_status_var, foreground=_RED
+        )
+        self._hdr_ssh_label.pack(side="right")
+        ttk.Label(header, text="SSH:", font=("", 9, "bold")).pack(side="right", padx=(8, 4))
+
         ttk.Separator(self, orient="horizontal").pack(fill="x", padx=10)
 
     # ------------------------------------------------------------------
@@ -364,16 +387,19 @@ class _App(tk.Tk):
         tab2 = ttk.Frame(self._nb, padding=12)
         tab3 = ttk.Frame(self._nb, padding=12)
         tab4 = ttk.Frame(self._nb, padding=12)
+        tab5 = ttk.Frame(self._nb, padding=12)
 
         self._nb.add(tab1, text="  Content Browser  ")
         self._nb.add(tab2, text="  Server Manager  ")
         self._nb.add(tab3, text="  Nextcloud  ")
-        self._nb.add(tab4, text="  Archive  ")
+        self._nb.add(tab4, text="  Connections  ")
+        self._nb.add(tab5, text="  Archive  ")
 
         self._build_content_tab(tab1, content)
         self._build_server_tab(tab2)
         self._build_nextcloud_tab(tab3)
-        self._build_archive_tab(tab4)
+        self._build_connections_tab(tab4)
+        self._build_archive_tab(tab5)
 
         self._nb.select(1)  # type: ignore[no-untyped-call]  # Server Manager default tab
         self._nb.bind("<<NotebookTabChanged>>", self._on_tab_changed)
@@ -399,8 +425,6 @@ class _App(tk.Tk):
             self._panels[category] = panel
 
     def _build_server_tab(self, parent: ttk.Frame) -> None:
-        ssh_host, ssh_user, ssh_key = load_ssh_config()
-
         # ── Share copy section ──────────────────────────────────────────────
         share_row = ttk.Frame(parent)
         share_row.pack(fill="x", pady=(0, 12))
@@ -459,89 +483,21 @@ class _App(tk.Tk):
         sb.pack(side="right", fill="y")
         self._server_result.pack(fill="both", expand=True)
 
-        # ── SSH Connection section ──────────────────────────────────────────
-        ssh_frame = ttk.LabelFrame(
-            parent, text="SSH Connection", style="Primary.TLabelframe", padding=8
-        )
-        ssh_frame.pack(fill="both", expand=True)
-
-        # Connection row
-        conn_row = ttk.Frame(ssh_frame)
-        conn_row.pack(fill="x", pady=(0, 6))
-
-        ttk.Label(conn_row, text="Host:").pack(side="left")
-        self._ssh_host_var = tk.StringVar(value=ssh_host)
-        ttk.Entry(conn_row, textvariable=self._ssh_host_var, width=18).pack(
+        # ── Deploy row (server selected in Connections tab) ─────────────────
+        deploy_row = ttk.Frame(parent)
+        deploy_row.pack(fill="x", pady=(0, 4))
+        ttk.Label(deploy_row, text="Server:").pack(side="left")
+        ttk.Label(deploy_row, textvariable=self._ssh_server_var, foreground=_GRAY).pack(
             side="left", padx=(4, 12)
         )
-        ttk.Label(conn_row, text="User:").pack(side="left")
-        self._ssh_user_var = tk.StringVar(value=ssh_user)
-        ttk.Entry(conn_row, textvariable=self._ssh_user_var, width=12).pack(
-            side="left", padx=(4, 12)
-        )
-        self._ssh_connect_btn = ttk.Button(
-            conn_row, text="Connect", command=self._on_ssh_connect
-        )
-        self._ssh_connect_btn.pack(side="left", padx=(0, 4))
-        self._ssh_disconnect_btn = ttk.Button(
-            conn_row, text="Disconnect", command=self._on_ssh_disconnect
-        )
-        self._ssh_disconnect_btn.pack(side="left", padx=(0, 16))
-        self._ssh_disconnect_btn.state(["disabled"])
-
-        ttk.Label(conn_row, text="Status:").pack(side="left")
-        self._ssh_status_var = tk.StringVar(value="Not connected")
-        self._ssh_status_lbl = ttk.Label(
-            conn_row, textvariable=self._ssh_status_var, foreground=_RED
-        )
-        self._ssh_status_lbl.pack(side="left", padx=(4, 0))
-
-        ttk.Button(conn_row, text="Refresh", command=self._on_ssh_refresh).pack(
-            side="right"
-        )
-
-        # Key file row
-        key_row = ttk.Frame(ssh_frame)
-        key_row.pack(fill="x", pady=(0, 6))
-        ttk.Label(key_row, text="Key file:").pack(side="left")
-        self._ssh_key_var = tk.StringVar(value=ssh_key)
-        ttk.Entry(key_row, textvariable=self._ssh_key_var, width=45).pack(
-            side="left", padx=(4, 4)
-        )
-        ttk.Button(key_row, text="Browse…", command=self._on_ssh_browse_key).pack(side="left")
-        ttk.Button(
-            key_row, text="Forget Passphrase", command=self._on_forget_passphrase
-        ).pack(side="left", padx=(8, 0))
-        ttk.Label(
-            key_row,
-            text="(leave blank for default ~/.ssh/ keys)",
-            foreground=_GRAY,
-        ).pack(side="left", padx=(8, 0))
-
-        ttk.Separator(ssh_frame, orient="horizontal").pack(fill="x", pady=(0, 6))
-
-        # Server selector + deploy row — pack before content so it anchors to the bottom
-        deploy_row = ttk.Frame(ssh_frame)
-        deploy_row.pack(fill="x", side="bottom", pady=(6, 0))
-
-        ttk.Label(deploy_row, text="Target server:").pack(side="left")
-        self._ssh_server_var = tk.StringVar()
-        self._ssh_server_combo = ttk.Combobox(
-            deploy_row,
-            textvariable=self._ssh_server_var,
-            state="readonly",
-            width=32,
-        )
-        self._ssh_server_combo.pack(side="left", padx=(6, 12))
-        self._ssh_server_combo.bind("<<ComboboxSelected>>", self._on_server_selected)
         self._ssh_deploy_btn = ttk.Button(
             deploy_row, text="Deploy to Server", command=self._on_ssh_deploy
         )
         self._ssh_deploy_btn.pack(side="left")
         self._ssh_deploy_btn.state(["disabled"])
 
-        # Two-column content area: share (left) | server management (right)
-        columns = ttk.Frame(ssh_frame)
+        # ── Two-column content area: share (left) | server management (right)
+        columns = ttk.Frame(parent)
         columns.pack(fill="both", expand=True)
         columns.grid_rowconfigure(0, weight=1)
         columns.grid_columnconfigure(0, weight=1)
@@ -552,11 +508,33 @@ class _App(tk.Tk):
             columns, text="From Share", style="Primary.TLabelframe", padding=4
         )
         share_col.grid(row=0, column=0, sticky="nsew", padx=(0, 4))
-        self._ssh_content_frame = share_col
+
+        share_header = ttk.Frame(share_col)
+        share_header.pack(fill="x", pady=(0, 4))
+        self._share_refresh_btn = ttk.Button(
+            share_header, text="Refresh", command=self._refresh_share_content, width=8
+        )
+        self._share_refresh_btn.pack(side="right")
+        self._share_refresh_btn.state(["disabled"])
+
+        # _ssh_content_frame is the inner frame; _rebuild_share_panels only touches this,
+        # leaving share_header (and the Refresh button) untouched on reconnect.
+        share_content = ttk.Frame(share_col)
+        share_content.pack(fill="both", expand=True)
+        self._ssh_content_frame = share_content
+
         self._ssh_placeholder = ttk.Label(
-            share_col, text="Connect to browse content on the share", foreground=_GRAY
+            share_content,
+            text="Connect to browse content on the share",
+            foreground="#3b82f6",
+            font=("", 9, "underline"),
+            cursor="hand2",
+            justify="center",
         )
         self._ssh_placeholder.pack(expand=True)
+        self._ssh_placeholder.bind(
+            "<Button-1>", lambda _e: self._nb.select(3)  # type: ignore[no-untyped-call]
+        )
 
         # Right: content on the selected server
         server_col = ttk.LabelFrame(
@@ -645,60 +623,15 @@ class _App(tk.Tk):
         self._server_tracks_lf = tracks_lf
 
     def _build_nextcloud_tab(self, parent: ttk.Frame) -> None:
-        # ── Connections ───────────────────────────────────────────────────
-        conn_lf = ttk.LabelFrame(
-            parent, text="Connections", style="Primary.TLabelframe", padding=8
+        # ── Context summary (connection + selection state) ────────────────
+        ctx_row = ttk.Frame(parent)
+        ctx_row.pack(fill="x", pady=(0, 8))
+        ttk.Label(ctx_row, text="Content Browser:", font=("", 9, "bold")).pack(side="left")
+        ttk.Label(ctx_row, textvariable=self._nc_selection_var, foreground=_GRAY).pack(
+            side="left", padx=(6, 20)
         )
-        conn_lf.pack(fill="x", pady=(0, 8))
-
-        # Nextcloud row
-        nc_row = ttk.Frame(conn_lf)
-        nc_row.pack(fill="x", pady=(0, 4))
-        ttk.Label(nc_row, text="Nextcloud:", width=13, anchor="e").pack(side="left")
-        self._nc_status_var = tk.StringVar(value="Not connected")
-        self._nc_status_label = ttk.Label(
-            nc_row, textvariable=self._nc_status_var, foreground=_RED, width=28
-        )
-        self._nc_status_label.pack(side="left", padx=(6, 8))
-        self._nc_connect_btn = ttk.Button(
-            nc_row, text="Connect…", command=self._on_nc_connect
-        )
-        self._nc_connect_btn.pack(side="left", padx=(0, 4))
-        self._nc_disconnect_btn = ttk.Button(
-            nc_row, text="Disconnect", command=self._on_nc_disconnect
-        )
-        self._nc_disconnect_btn.pack(side="left")
-        self._nc_disconnect_btn.state(["disabled"])
-        ttk.Button(
-            nc_row, text="Forget Credentials", command=self._on_forget_nc_credentials
-        ).pack(side="left", padx=(8, 0))
-
-        # AC Server row
-        ssh_row = ttk.Frame(conn_lf)
-        ssh_row.pack(fill="x")
-        ttk.Label(ssh_row, text="AC Server:", width=13, anchor="e").pack(side="left")
-        self._nc_ssh_status_var = tk.StringVar(value="Not connected")
-        self._nc_ssh_status_label = ttk.Label(
-            ssh_row, textvariable=self._nc_ssh_status_var, foreground=_RED, width=28
-        )
-        self._nc_ssh_status_label.pack(side="left", padx=(6, 8))
-        self._nc_ssh_btn = ttk.Button(
-            ssh_row, text="Connect to Server…", command=self._on_nc_ssh_connect
-        )
-        self._nc_ssh_btn.pack(side="left", padx=(0, 12))
-        ttk.Label(ssh_row, text="Server:").pack(side="left")
-        self._nc_server_var = tk.StringVar()
-        self._nc_server_combo = ttk.Combobox(
-            ssh_row, textvariable=self._nc_server_var, state="readonly", width=32
-        )
-        self._nc_server_combo.pack(side="left", padx=(4, 0))
-        self._nc_server_combo.state(["disabled"])
-
-        # ── Content Browser selection summary ────────────────────────────
-        sel_row = ttk.Frame(parent)
-        sel_row.pack(fill="x", pady=(0, 6))
-        ttk.Label(sel_row, text="Content Browser:", font=("", 9, "bold")).pack(side="left")
-        ttk.Label(sel_row, textvariable=self._nc_selection_var, foreground=_GRAY).pack(
+        ttk.Label(ctx_row, text="Server:", font=("", 9, "bold")).pack(side="left")
+        ttk.Label(ctx_row, textvariable=self._ssh_server_var, foreground=_GRAY).pack(
             side="left", padx=(6, 0)
         )
 
@@ -799,6 +732,91 @@ class _App(tk.Tk):
         ttk.Label(last_row, textvariable=self._last_archive_var, foreground=_GRAY).pack(
             side="left", padx=(6, 0)
         )
+
+    def _build_connections_tab(self, parent: ttk.Frame) -> None:
+        # ── SSH Connection ────────────────────────────────────────────────
+        ssh_lf = ttk.LabelFrame(
+            parent, text="SSH Connection", style="Primary.TLabelframe", padding=8
+        )
+        ssh_lf.pack(fill="x", pady=(0, 12))
+
+        conn_row = ttk.Frame(ssh_lf)
+        conn_row.pack(fill="x", pady=(0, 6))
+        ttk.Label(conn_row, text="Host:").pack(side="left")
+        ttk.Entry(conn_row, textvariable=self._ssh_host_var, width=18).pack(
+            side="left", padx=(4, 12)
+        )
+        ttk.Label(conn_row, text="User:").pack(side="left")
+        ttk.Entry(conn_row, textvariable=self._ssh_user_var, width=12).pack(
+            side="left", padx=(4, 12)
+        )
+        self._ssh_connect_btn = ttk.Button(
+            conn_row, text="Connect", command=self._on_ssh_connect
+        )
+        self._ssh_connect_btn.pack(side="left", padx=(0, 4))
+        self._ssh_disconnect_btn = ttk.Button(
+            conn_row, text="Disconnect", command=self._on_ssh_disconnect
+        )
+        self._ssh_disconnect_btn.pack(side="left", padx=(0, 16))
+        self._ssh_disconnect_btn.state(["disabled"])
+        ttk.Label(conn_row, text="Status:").pack(side="left")
+        self._ssh_status_lbl = ttk.Label(
+            conn_row, textvariable=self._ssh_status_var, foreground=_RED
+        )
+        self._ssh_status_lbl.pack(side="left", padx=(4, 0))
+        ttk.Button(conn_row, text="Refresh", command=self._on_ssh_refresh).pack(side="right")
+
+        key_row = ttk.Frame(ssh_lf)
+        key_row.pack(fill="x", pady=(0, 6))
+        ttk.Label(key_row, text="Key file:").pack(side="left")
+        ttk.Entry(key_row, textvariable=self._ssh_key_var, width=45).pack(
+            side="left", padx=(4, 4)
+        )
+        ttk.Button(key_row, text="Browse…", command=self._on_ssh_browse_key).pack(side="left")
+        ttk.Button(
+            key_row, text="Forget Passphrase", command=self._on_forget_passphrase
+        ).pack(side="left", padx=(8, 0))
+        ttk.Label(
+            key_row, text="(leave blank for default ~/.ssh/ keys)", foreground=_GRAY
+        ).pack(side="left", padx=(8, 0))
+
+        ttk.Separator(ssh_lf, orient="horizontal").pack(fill="x", pady=(0, 6))
+
+        server_row = ttk.Frame(ssh_lf)
+        server_row.pack(fill="x")
+        ttk.Label(server_row, text="Target server:").pack(side="left")
+        self._ssh_server_combo = ttk.Combobox(
+            server_row, textvariable=self._ssh_server_var, state="readonly", width=32
+        )
+        self._ssh_server_combo.pack(side="left", padx=(6, 0))
+        self._ssh_server_combo.bind("<<ComboboxSelected>>", self._on_server_selected)
+        self._ssh_server_combo.state(["disabled"])
+
+        # ── Nextcloud Connection ──────────────────────────────────────────
+        nc_lf = ttk.LabelFrame(
+            parent, text="Nextcloud Connection", style="Primary.TLabelframe", padding=8
+        )
+        nc_lf.pack(fill="x")
+
+        nc_row = ttk.Frame(nc_lf)
+        nc_row.pack(fill="x")
+        ttk.Label(nc_row, text="Nextcloud:", width=11, anchor="e").pack(side="left")
+        self._nc_status_label = ttk.Label(
+            nc_row, textvariable=self._nc_status_var, foreground=_RED, width=28
+        )
+        self._nc_status_label.pack(side="left", padx=(6, 8))
+        self._nc_connect_btn = ttk.Button(
+            nc_row, text="Connect…", command=self._on_nc_connect
+        )
+        self._nc_connect_btn.pack(side="left", padx=(0, 4))
+        self._nc_disconnect_btn = ttk.Button(
+            nc_row, text="Disconnect", command=self._on_nc_disconnect
+        )
+        self._nc_disconnect_btn.pack(side="left")
+        self._nc_disconnect_btn.state(["disabled"])
+        ttk.Button(
+            nc_row, text="Forget Credentials", command=self._on_forget_nc_credentials
+        ).pack(side="left", padx=(8, 0))
 
     # ------------------------------------------------------------------
     # Layout — footer (shared status bar)
@@ -902,34 +920,15 @@ class _App(tk.Tk):
         if self._nc_client is not None:
             self._nc_status_var.set(f"Connected as {self._nc_client.username}")
             self._nc_status_label.configure(foreground=_GREEN)
+            self._hdr_nc_label.configure(foreground=_GREEN)
             self._nc_connect_btn.state(["disabled"])
             self._nc_disconnect_btn.state(["!disabled"])
         else:
             self._nc_status_var.set("Not connected")
             self._nc_status_label.configure(foreground=_RED)
+            self._hdr_nc_label.configure(foreground=_RED)
             self._nc_connect_btn.state(["!disabled"])
             self._nc_disconnect_btn.state(["disabled"])
-
-    def _update_nc_ssh_status(self) -> None:
-        if self._ssh_client is not None and self._ssh_client.is_connected:
-            host = self._ssh_host_var.get().strip()
-            self._nc_ssh_status_var.set(f"Connected to {host}")
-            self._nc_ssh_status_label.configure(foreground=_GREEN)
-            self._nc_ssh_btn.configure(text="Disconnect Server")
-            self._nc_ssh_btn.configure(command=self._on_nc_ssh_disconnect)
-            servers = list(self._ssh_server_map.keys())
-            self._nc_server_combo.configure(values=servers)
-            self._nc_server_combo.state(["!disabled"])
-            if servers and not self._nc_server_var.get():
-                self._nc_server_var.set(servers[0])
-        else:
-            self._nc_ssh_status_var.set("Not connected")
-            self._nc_ssh_status_label.configure(foreground=_RED)
-            self._nc_ssh_btn.configure(text="Connect to Server…")
-            self._nc_ssh_btn.configure(command=self._on_nc_ssh_connect)
-            self._nc_server_combo.configure(values=[])
-            self._nc_server_combo.state(["disabled"])
-            self._nc_server_var.set("")
 
     def _try_nc_auto_connect(self) -> None:
         creds = load_credentials()
@@ -987,25 +986,6 @@ class _App(tk.Tk):
             self._nc_file_panel.destroy()
             self._nc_file_panel = None
         self._nc_browser_placeholder.pack(expand=True)
-
-    def _on_nc_ssh_connect(self) -> None:
-        if self._ssh_client is not None:
-            self._update_nc_ssh_status()
-            return
-        host = self._ssh_host_var.get().strip()
-        if not host:
-            messagebox.showinfo(
-                "Server not configured",
-                "Configure the SSH connection settings in the Server Manager tab first.",
-                parent=self,
-            )
-            self._nb.select(1)  # type: ignore[no-untyped-call]
-            return
-        self._on_ssh_connect()
-
-    def _on_nc_ssh_disconnect(self) -> None:
-        self._on_ssh_disconnect()
-        self._update_nc_ssh_status()
 
     def _init_nc_file_panel(self, client: NextcloudClient) -> None:
         if self._nc_file_panel is not None:
@@ -1200,17 +1180,16 @@ class _App(tk.Tk):
         if self._ssh_client is None or not self._ssh_client.is_connected:
             messagebox.showinfo(
                 "Server not connected",
-                "Connect to an AC server in the Server Manager tab (or via the "
-                "AC Server connection row above) before creating a server pack.",
+                "Connect to an AC server in the Connections tab before creating a server pack.",
                 parent=self,
             )
             return
 
-        server_label = self._nc_server_var.get()
+        server_label = self._ssh_server_var.get()
         if not server_label:
             messagebox.showinfo(
                 "No server selected",
-                "Select a server from the dropdown.",
+                "Select a server from the dropdown in the Connections tab.",
                 parent=self,
             )
             return
@@ -1434,6 +1413,8 @@ class _App(tk.Tk):
             self._append_server_result(summary, "ok")
             self._set_status(f"Copied {result.copied} file(s) to {share_path}", _GREEN)
 
+        self._refresh_share_content()
+
     # ------------------------------------------------------------------
     # Actions — SSH Deploy section
     # ------------------------------------------------------------------
@@ -1441,6 +1422,7 @@ class _App(tk.Tk):
     def _update_ssh_status(self, text: str, color: str = _GRAY) -> None:
         self._ssh_status_var.set(text)
         self._ssh_status_lbl.configure(foreground=color)
+        self._hdr_ssh_label.configure(foreground=color)
 
     def _on_ssh_connect(self) -> None:
         host = self._ssh_host_var.get().strip()
@@ -1682,7 +1664,9 @@ class _App(tk.Tk):
             label = f"{get_display_name(srv)}  [{srv}]"
             self._ssh_server_map[label] = srv
             display_list.append(label)
+        self._share_refresh_btn.state(["!disabled"])
         self._ssh_server_combo["values"] = display_list
+        self._ssh_server_combo.state(["!disabled"])
         if display_list:
             self._ssh_server_combo.set(display_list[0])
             self._ssh_deploy_btn.state(["!disabled"])
@@ -1692,7 +1676,6 @@ class _App(tk.Tk):
             self._ssh_deploy_btn.state(["disabled"])
 
         self._set_status(f"SSH connected to {host}", _GREEN)
-        self._update_nc_ssh_status()
 
     def _on_ssh_connect_failed(self, err: str) -> None:
         log.error("SSH connection failed: %s", err)
@@ -1718,11 +1701,12 @@ class _App(tk.Tk):
         self._ssh_panels.clear()
         self._ssh_server_map.clear()
         self._current_server_name = ""
+        self._share_refresh_btn.state(["disabled"])
         self._ssh_server_combo["values"] = []
         self._ssh_server_combo.set("")
+        self._ssh_server_combo.state(["disabled"])
         self._ssh_placeholder.configure(text="Connect to browse content on the share")
         self._ssh_placeholder.pack(expand=True)
-        self._update_nc_ssh_status()
         self._clear_server_mgmt_panel()
         self._set_status("SSH disconnected", _GRAY)
 
@@ -1741,6 +1725,20 @@ class _App(tk.Tk):
             except Exception as exc:
                 err = str(exc)
                 self.after(0, lambda: self._on_ssh_connect_failed(err))
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _refresh_share_content(self) -> None:
+        if self._ssh_client is None or not self._ssh_client.is_connected:
+            return
+        client = self._ssh_client
+
+        def _worker() -> None:
+            try:
+                content = client.list_share_content()
+                self.after(0, lambda: self._rebuild_share_panels(content))
+            except Exception as exc:
+                log.error("Failed to refresh share content: %s", exc)
 
         threading.Thread(target=_worker, daemon=True).start()
 
@@ -2271,6 +2269,7 @@ class _App(tk.Tk):
         deployed_cars = [name for cat, name in result.deployed_items if cat == "cars"]
         if not deployed_cars:
             self._ssh_deploy_btn.state(["!disabled"])
+            self._on_server_selected()
             return
 
         service = f"{server_name}.service"
@@ -2283,6 +2282,7 @@ class _App(tk.Tk):
             self._on_stop_and_update(server_name, server_label, service)
         else:
             self._ssh_deploy_btn.state(["!disabled"])
+            self._on_server_selected()
 
     def _on_stop_and_update(
         self,
