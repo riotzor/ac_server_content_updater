@@ -306,6 +306,82 @@ class _TrackPickerDialog(tk.Toplevel):
         return self._result
 
 
+class _SingleLayoutDialog(tk.Toplevel):
+    """Modal dropdown for selecting a layout when a track has multiple layouts."""
+
+    def __init__(self, parent: tk.Misc, track: str, layouts: list[str]) -> None:
+        super().__init__(parent)
+        self.title("Select Track Layout")
+        self.resizable(False, False)
+        self.grab_set()
+        self._result: str | None = None
+
+        ttk.Label(self, text=f"Select layout for {track}:").pack(padx=12, pady=(12, 6))
+        var = tk.StringVar(value=layouts[0])
+        self._var = var
+        ttk.Combobox(
+            self, textvariable=var, values=layouts, state="readonly", width=44
+        ).pack(padx=12, pady=(0, 8))
+
+        btn_row = ttk.Frame(self)
+        btn_row.pack(fill="x", padx=12, pady=12)
+        ttk.Button(btn_row, text="Cancel", command=self._cancel).pack(side="right", padx=(4, 0))
+        ttk.Button(btn_row, text="OK", command=self._ok).pack(side="right")
+
+        self.protocol("WM_DELETE_WINDOW", self._cancel)
+        self.wait_window()
+
+    def _ok(self) -> None:
+        self._result = self._var.get()
+        self.destroy()
+
+    def _cancel(self) -> None:
+        self.destroy()
+
+    @property
+    def result(self) -> str | None:
+        return self._result
+
+
+class _AiSplineTrackDialog(tk.Toplevel):
+    """Modal dropdown for selecting a track to receive an AI spline file."""
+
+    def __init__(self, parent: tk.Misc, tracks: list[str]) -> None:
+        super().__init__(parent)
+        self.title("Add AI Spline")
+        self.resizable(False, False)
+        self.grab_set()
+        self._result: str | None = None
+
+        ttk.Label(self, text="Select the track to add an AI spline to:").pack(
+            padx=12, pady=(12, 6)
+        )
+        var = tk.StringVar(value=tracks[0])
+        self._var = var
+        ttk.Combobox(
+            self, textvariable=var, values=tracks, state="readonly", width=44
+        ).pack(padx=12, pady=(0, 8))
+
+        btn_row = ttk.Frame(self)
+        btn_row.pack(fill="x", padx=12, pady=12)
+        ttk.Button(btn_row, text="Cancel", command=self._cancel).pack(side="right", padx=(4, 0))
+        ttk.Button(btn_row, text="Next…", command=self._ok).pack(side="right")
+
+        self.protocol("WM_DELETE_WINDOW", self._cancel)
+        self.wait_window()
+
+    def _ok(self) -> None:
+        self._result = self._var.get()
+        self.destroy()
+
+    def _cancel(self) -> None:
+        self.destroy()
+
+    @property
+    def result(self) -> str | None:
+        return self._result
+
+
 class _App(tk.Tk):
     def __init__(self, install_dir: Path, content: dict[str, list[str]]) -> None:
         super().__init__()
@@ -618,6 +694,10 @@ class _App(tk.Tk):
         ttk.Button(
             track_btns, text="Fix surfaces.ini",
             command=self._on_fix_surfaces_ini,
+        ).pack(side="left", padx=(4, 0))
+        ttk.Button(
+            track_btns, text="Add AI Spline…",
+            command=self._on_add_ai_spline,
         ).pack(side="left", padx=(4, 0))
         ttk.Button(
             track_btns, text="Delete",
@@ -2038,6 +2118,60 @@ class _App(tk.Tk):
 
         threading.Thread(target=_worker, daemon=True).start()
 
+    def _on_add_ai_spline(self) -> None:
+        if self._ssh_client is None or not self._current_server_name:
+            return
+        selected = self._server_tracks_panel.get_selected()
+        if selected:
+            track = selected[0]
+        else:
+            tracks = list(self._server_tracks_panel._vars.keys())
+            if not tracks:
+                messagebox.showinfo("No tracks", "No tracks found on the server.", parent=self)
+                return
+            dlg = _AiSplineTrackDialog(self, tracks)
+            if dlg.result is None:
+                return
+            track = dlg.result
+
+        spline_str = filedialog.askopenfilename(
+            title="Select AI spline file",
+            filetypes=[("AI spline", "*.csv *.bin"), ("All files", "*.*")],
+            parent=self,
+        )
+        if not spline_str:
+            return
+        spline_path = Path(spline_str)
+
+        client = self._ssh_client
+        server_dir = f"{_AC_HOME}/{self._current_server_name}"
+        self._start_progress(f"Uploading AI spline to {track}…")
+
+        def _worker() -> None:
+            error: str | None = None
+            try:
+                client.create_ai_directory(server_dir, track)
+                client.upload_ai_spline(server_dir, track, spline_path)
+            except Exception as exc:
+                error = str(exc)
+
+            self.after(0, self._stop_progress)
+            ts = datetime.now().strftime("%H:%M:%S")
+            if error:
+                self.after(0, lambda: self._append_server_result(
+                    f"[{ts}]  Add AI Spline failed: {error}", "error"
+                ))
+                self.after(0, lambda: self._set_status("Add AI Spline failed (see results)", _RED))
+            else:
+                self.after(0, lambda: self._append_server_result(
+                    f"[{ts}]  AI spline '{spline_path.name}' uploaded to {track}/ai/", "ok"
+                ))
+                self.after(0, lambda: self._set_status(
+                    f"AI spline uploaded to {track}", _GREEN
+                ))
+
+        threading.Thread(target=_worker, daemon=True).start()
+
     def _on_delete_content(self, category: str) -> None:
         if self._ssh_client is None or not self._current_server_name:
             return
@@ -2188,15 +2322,45 @@ class _App(tk.Tk):
 
         def _worker() -> None:
             error: str | None = None
+            layout_name: str | None = None
+
             try:
-                client.write_active_track(server_dir, track)
-                self.after(0, lambda: self._active_track_var.set(track))
-                ts = datetime.now().strftime("%H:%M:%S")
-                self.after(0, lambda: self._append_server_result(
-                    f"[{ts}]  Active track set to {track}", "ok"
-                ))
+                layouts = client.list_track_layouts(server_dir, track)
+                if len(layouts) == 1:
+                    layout_name = layouts[0]
+                    log.info("Track %s has one layout: %s", track, layout_name)
+                elif len(layouts) > 1:
+                    # Show picker on main thread, wait for result
+                    picked: list[str | None] = [None]
+                    cancelled: list[bool] = [False]
+                    done = threading.Event()
+
+                    def _pick_layout() -> None:
+                        layout_dlg = _SingleLayoutDialog(self, track, layouts)
+                        picked[0] = layout_dlg.result
+                        cancelled[0] = layout_dlg.result is None
+                        done.set()
+
+                    self.after(0, _pick_layout)
+                    done.wait()
+
+                    if cancelled[0]:
+                        return
+                    layout_name = picked[0]
             except Exception as exc:
                 error = str(exc)
+
+            if error is None:
+                try:
+                    client.write_active_track(server_dir, track, layout_name)
+                    self.after(0, lambda: self._active_track_var.set(track))
+                    ts = datetime.now().strftime("%H:%M:%S")
+                    suffix = f" (layout: {layout_name})" if layout_name else ""
+                    self.after(0, lambda: self._append_server_result(
+                        f"[{ts}]  Active track set to {track}{suffix}", "ok"
+                    ))
+                except Exception as exc:
+                    error = str(exc)
 
             if error is None:
                 try:
@@ -2205,8 +2369,9 @@ class _App(tk.Tk):
                     self.after(0, lambda: self._append_server_result(
                         f"[{ts}]  Restarted {service}", "ok"
                     ))
+                    suffix = f" (layout: {layout_name})" if layout_name else ""
                     self.after(0, lambda: self._set_status(
-                        f"Active track: {track} — {service} restarted", _GREEN
+                        f"Active track: {track}{suffix} — {service} restarted", _GREEN
                     ))
                 except RuntimeError as exc:
                     error = str(exc)

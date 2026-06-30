@@ -6,6 +6,7 @@ import shlex
 import stat as stat_module
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import paramiko
 
@@ -430,6 +431,27 @@ class SshClient:
         log.info("Server tracks at %s: %d found", server_dir, len(result))
         return result
 
+    def list_track_layouts(self, server_dir: str, track_name: str) -> list[str]:
+        """Return sorted layout names for a track on the server.
+
+        Layout names are derived from ``models_<layout>.ini`` files in the track
+        directory — the same convention used by detect_track_layouts locally.
+        Returns an empty list for single-layout tracks or on error.
+        """
+        assert self._sftp is not None, "Not connected"
+        track_path = f"{server_dir}/content/tracks/csp/{track_name}"
+        try:
+            names = self._sftp.listdir(track_path)
+        except OSError:
+            return []
+        layouts: list[str] = []
+        for name in names:
+            if name.startswith("models_") and name.endswith(".ini"):
+                layout = name[len("models_"):-len(".ini")]
+                if layout:
+                    layouts.append(layout)
+        return sorted(layouts)
+
     def delete_content(
         self,
         server_dir: str,
@@ -515,16 +537,28 @@ class SshClient:
                 return parts[-1] if len(parts) > 1 else track_val
         return ""
 
-    def write_active_track(self, server_dir: str, track_name: str) -> None:
-        """Update the TRACK= line in server_cfg.ini to point at track_name.
+    def write_active_track(
+        self,
+        server_dir: str,
+        track_name: str,
+        layout_name: str | None = None,
+    ) -> None:
+        """Update TRACK= (and optionally CONFIG_TRACK=) in server_cfg.ini.
 
         Preserves the existing CSP prefix (csp/<ver>/../<flags>/..) if present;
         falls back to csp/2144/../E/ if no TRACK line exists yet.
+
+        layout_name: when provided, updates or inserts CONFIG_TRACK=<layout_name>
+          immediately after the TRACK= line.  When None, any existing CONFIG_TRACK
+          line is removed (tracks without layouts must not have this key).
         Requires a server restart to take effect.
         """
         assert self._sftp is not None, "Not connected"
         path = f"{server_dir}/cfg/server_cfg.ini"
-        log.info("Setting active track: %s → %s", server_dir, track_name)
+        log.info(
+            "Setting active track: %s → %s  layout=%s",
+            server_dir, track_name, layout_name or "none",
+        )
         try:
             with self._sftp.open(path, "r") as fh:
                 content: str = fh.read().decode("utf-8", errors="replace")
@@ -544,9 +578,58 @@ class SshClient:
         if not count:
             new_content = content.rstrip("\n") + f"\nTRACK=csp/2144/../E/../{track_name}\n"
 
+        if layout_name is not None:
+            ct_line = f"CONFIG_TRACK={layout_name}"
+            new_content, ct_count = re.subn(
+                r"^CONFIG_TRACK=.*$", ct_line, new_content, flags=re.MULTILINE
+            )
+            if not ct_count:
+                # Insert immediately after the TRACK= line
+                new_content = re.sub(
+                    r"(^TRACK=.+$)",
+                    lambda m: m.group(1) + f"\nCONFIG_TRACK={layout_name}",
+                    new_content,
+                    count=1,
+                    flags=re.MULTILINE,
+                )
+        else:
+            # Remove CONFIG_TRACK when the track has no layouts
+            new_content = re.sub(r"^CONFIG_TRACK=.*\n?", "", new_content, flags=re.MULTILINE)
+
         with self._sftp.open(path, "w") as fh:
             fh.write(new_content.encode("utf-8"))
-        log.info("Active track set to %s", track_name)
+        log.info("Active track set to %s (layout=%s)", track_name, layout_name or "none")
+
+    def create_ai_directory(self, server_dir: str, track_name: str) -> None:
+        """Create the ai/ subdirectory inside a track's content folder on the server.
+
+        Sets ownership <username>:<username> and mode 775.  Safe to call if
+        the directory already exists (mkdir -p).
+        """
+        ai_path = f"{server_dir}/content/tracks/csp/{track_name}/ai"
+        owner = f"{self._username}:{self._username}"
+        self._exec(
+            f"mkdir -p {shlex.quote(ai_path)} && "
+            f"chown {shlex.quote(owner)} {shlex.quote(ai_path)} && "
+            f"chmod 775 {shlex.quote(ai_path)}"
+        )
+        log.info("Created AI directory: %s", ai_path)
+
+    def upload_ai_spline(self, server_dir: str, track_name: str, local_path: Path) -> None:
+        """Upload a local AI spline file to the track's ai/ directory on the server.
+
+        Sets ownership <username>:<username> and mode 664 on the uploaded file.
+        """
+        assert self._sftp is not None, "Not connected"
+        remote_dir = f"{server_dir}/content/tracks/csp/{track_name}/ai"
+        remote_path = f"{remote_dir}/{local_path.name}"
+        self._sftp.put(str(local_path), remote_path)
+        owner = f"{self._username}:{self._username}"
+        self._exec(
+            f"chown {shlex.quote(owner)} {shlex.quote(remote_path)} && "
+            f"chmod 664 {shlex.quote(remote_path)}"
+        )
+        log.info("Uploaded AI spline: %s → %s", local_path.name, remote_path)
 
     # ------------------------------------------------------------------
     # Internal helpers
