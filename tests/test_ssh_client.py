@@ -1281,3 +1281,256 @@ def test_ensure_capacity_reads_from_correct_path() -> None:
     assert any(
         "/srv/ac-server/cfg/server_cfg.ini" in str(c) for c in sftp.open.call_args_list
     )
+
+
+# ---------------------------------------------------------------------------
+# list_track_layouts
+# ---------------------------------------------------------------------------
+
+
+def test_list_track_layouts_returns_layouts_from_models_ini_files() -> None:
+    mock_ssh = _make_mock_ssh()
+    sftp = mock_ssh.open_sftp.return_value
+    sftp.listdir.return_value = ["models_tourist.ini", "models_endurance.ini", "data", "skins"]
+
+    with patch("ac_updater.ssh_client.paramiko.SSHClient", return_value=mock_ssh):
+        client = SshClient("h", "u")
+        client.connect()
+    layouts = client.list_track_layouts("/home/acserver/ac-drift", "ks_nordschleife")
+
+    assert layouts == ["endurance", "tourist"]
+
+
+def test_list_track_layouts_returns_empty_for_single_layout_track() -> None:
+    mock_ssh = _make_mock_ssh()
+    sftp = mock_ssh.open_sftp.return_value
+    sftp.listdir.return_value = ["models.ini", "data", "skins", "ui"]
+
+    with patch("ac_updater.ssh_client.paramiko.SSHClient", return_value=mock_ssh):
+        client = SshClient("h", "u")
+        client.connect()
+    layouts = client.list_track_layouts("/home/acserver/ac-drift", "monza")
+
+    assert layouts == []
+
+
+def test_list_track_layouts_returns_empty_on_oserror() -> None:
+    mock_ssh = _make_mock_ssh()
+    sftp = mock_ssh.open_sftp.return_value
+    sftp.listdir.side_effect = OSError("not found")
+
+    with patch("ac_updater.ssh_client.paramiko.SSHClient", return_value=mock_ssh):
+        client = SshClient("h", "u")
+        client.connect()
+    assert client.list_track_layouts("/home/acserver/ac-drift", "missing_track") == []
+
+
+def test_list_track_layouts_excludes_models_ini_without_layout_suffix() -> None:
+    mock_ssh = _make_mock_ssh()
+    sftp = mock_ssh.open_sftp.return_value
+    # "models_.ini" has empty suffix after stripping — should be excluded
+    sftp.listdir.return_value = ["models_.ini", "models_short.ini"]
+
+    with patch("ac_updater.ssh_client.paramiko.SSHClient", return_value=mock_ssh):
+        client = SshClient("h", "u")
+        client.connect()
+    layouts = client.list_track_layouts("/home/acserver/ac-drift", "ks_nurburgring")
+
+    assert layouts == ["short"]
+
+
+def test_list_track_layouts_reads_from_correct_path() -> None:
+    mock_ssh = _make_mock_ssh()
+    sftp = mock_ssh.open_sftp.return_value
+    sftp.listdir.return_value = []
+
+    with patch("ac_updater.ssh_client.paramiko.SSHClient", return_value=mock_ssh):
+        client = SshClient("h", "u")
+        client.connect()
+    client.list_track_layouts("/home/acserver/ac-drift", "ks_nordschleife")
+
+    sftp.listdir.assert_called_once_with(
+        "/home/acserver/ac-drift/content/tracks/csp/ks_nordschleife"
+    )
+
+
+# ---------------------------------------------------------------------------
+# write_active_track — CONFIG_TRACK handling
+# ---------------------------------------------------------------------------
+
+
+def _make_rw_sftp(read_content: bytes) -> tuple[MagicMock, list[bytes]]:
+    """Return (sftp_mock, write_buf) with read returning read_content."""
+    mock_ssh = _make_mock_ssh()
+    sftp = mock_ssh.open_sftp.return_value
+    buf: list[bytes] = []
+    write_fh = _sftp_file()
+    write_fh.write.side_effect = buf.append
+
+    def _open(path: str, mode: str) -> MagicMock:
+        return _sftp_file(read_content) if mode == "r" else write_fh
+
+    sftp.open.side_effect = _open
+    return mock_ssh, buf
+
+
+def test_write_active_track_inserts_config_track_after_track_line() -> None:
+    ini = b"NAME=drift\nTRACK=csp/2144/../E/../ks_nordschleife\nPORT=9600\n"
+    mock_ssh, buf = _make_rw_sftp(ini)
+
+    with patch("ac_updater.ssh_client.paramiko.SSHClient", return_value=mock_ssh):
+        client = SshClient("h", "u")
+        client.connect()
+    client.write_active_track("/home/acserver/ac-drift", "ks_nordschleife", layout_name="tourist")
+
+    written = b"".join(buf).decode()
+    assert "CONFIG_TRACK=tourist" in written
+    track_pos = written.index("TRACK=")
+    config_pos = written.index("CONFIG_TRACK=tourist")
+    assert config_pos > track_pos
+
+
+def test_write_active_track_replaces_existing_config_track() -> None:
+    ini = b"TRACK=csp/2144/../E/../ks_nordschleife\nCONFIG_TRACK=endurance\nPORT=9600\n"
+    mock_ssh, buf = _make_rw_sftp(ini)
+
+    with patch("ac_updater.ssh_client.paramiko.SSHClient", return_value=mock_ssh):
+        client = SshClient("h", "u")
+        client.connect()
+    client.write_active_track("/home/acserver/ac-drift", "ks_nordschleife", layout_name="tourist")
+
+    written = b"".join(buf).decode()
+    assert "CONFIG_TRACK=tourist" in written
+    assert "CONFIG_TRACK=endurance" not in written
+
+
+def test_write_active_track_removes_config_track_when_layout_none() -> None:
+    ini = b"TRACK=csp/2144/../E/../ks_nordschleife\nCONFIG_TRACK=tourist\nPORT=9600\n"
+    mock_ssh, buf = _make_rw_sftp(ini)
+
+    with patch("ac_updater.ssh_client.paramiko.SSHClient", return_value=mock_ssh):
+        client = SshClient("h", "u")
+        client.connect()
+    client.write_active_track("/home/acserver/ac-drift", "monza", layout_name=None)
+
+    written = b"".join(buf).decode()
+    assert "CONFIG_TRACK" not in written
+
+
+def test_write_active_track_no_config_track_added_when_layout_none_and_absent() -> None:
+    ini = b"TRACK=csp/2144/../E/../monza\nPORT=9600\n"
+    mock_ssh, buf = _make_rw_sftp(ini)
+
+    with patch("ac_updater.ssh_client.paramiko.SSHClient", return_value=mock_ssh):
+        client = SshClient("h", "u")
+        client.connect()
+    client.write_active_track("/home/acserver/ac-drift", "monza", layout_name=None)
+
+    written = b"".join(buf).decode()
+    assert "CONFIG_TRACK" not in written
+
+
+# ---------------------------------------------------------------------------
+# create_ai_directory
+# ---------------------------------------------------------------------------
+
+
+def test_create_ai_directory_runs_mkdir_chown_chmod() -> None:
+    mock_ssh = _make_mock_ssh()
+    mock_ssh.exec_command.return_value = (MagicMock(), _make_stdout("", 0), _make_stderr())
+
+    with patch("ac_updater.ssh_client.paramiko.SSHClient", return_value=mock_ssh):
+        client = SshClient("h", "acserver")
+        client.connect()
+    client.create_ai_directory("/home/acserver/ac-drift", "monza")
+
+    cmd: str = mock_ssh.exec_command.call_args[0][0]
+    assert "mkdir -p" in cmd
+    assert "chown" in cmd
+    assert "chmod 775" in cmd
+    assert "monza/ai" in cmd
+
+
+def test_create_ai_directory_uses_correct_path() -> None:
+    mock_ssh = _make_mock_ssh()
+    mock_ssh.exec_command.return_value = (MagicMock(), _make_stdout("", 0), _make_stderr())
+
+    with patch("ac_updater.ssh_client.paramiko.SSHClient", return_value=mock_ssh):
+        client = SshClient("h", "acserver")
+        client.connect()
+    client.create_ai_directory("/home/acserver/ac-drift", "ks_nordschleife")
+
+    cmd: str = mock_ssh.exec_command.call_args[0][0]
+    assert "/home/acserver/ac-drift/content/tracks/csp/ks_nordschleife/ai" in cmd
+
+
+def test_create_ai_directory_raises_on_exec_failure() -> None:
+    import pytest
+
+    mock_ssh = _make_mock_ssh()
+    mock_ssh.exec_command.return_value = (
+        MagicMock(), _make_stdout("", 1), _make_stderr("permission denied")
+    )
+
+    with patch("ac_updater.ssh_client.paramiko.SSHClient", return_value=mock_ssh):
+        client = SshClient("h", "acserver")
+        client.connect()
+    with pytest.raises(RuntimeError):
+        client.create_ai_directory("/home/acserver/ac-drift", "monza")
+
+
+# ---------------------------------------------------------------------------
+# upload_ai_spline
+# ---------------------------------------------------------------------------
+
+
+def test_upload_ai_spline_puts_file_via_sftp() -> None:
+    from pathlib import Path
+
+    mock_ssh = _make_mock_ssh()
+    mock_ssh.exec_command.return_value = (MagicMock(), _make_stdout("", 0), _make_stderr())
+    sftp = mock_ssh.open_sftp.return_value
+    local = Path("/local/ai.csv")
+
+    with patch("ac_updater.ssh_client.paramiko.SSHClient", return_value=mock_ssh):
+        client = SshClient("h", "acserver")
+        client.connect()
+    client.upload_ai_spline("/home/acserver/ac-drift", "monza", local)
+
+    sftp.put.assert_called_once()
+    call_args = sftp.put.call_args[0]
+    assert call_args[0] == str(local)
+    assert call_args[1] == "/home/acserver/ac-drift/content/tracks/csp/monza/ai/ai.csv"
+
+
+def test_upload_ai_spline_sets_664_permissions() -> None:
+    from pathlib import Path
+
+    mock_ssh = _make_mock_ssh()
+    mock_ssh.exec_command.return_value = (MagicMock(), _make_stdout("", 0), _make_stderr())
+
+    with patch("ac_updater.ssh_client.paramiko.SSHClient", return_value=mock_ssh):
+        client = SshClient("h", "acserver")
+        client.connect()
+    client.upload_ai_spline("/home/acserver/ac-drift", "monza", Path("/local/ai.csv"))
+
+    cmd: str = mock_ssh.exec_command.call_args[0][0]
+    assert "chown" in cmd
+    assert "chmod 664" in cmd
+
+
+def test_upload_ai_spline_uses_local_filename_on_remote() -> None:
+    from pathlib import Path
+
+    mock_ssh = _make_mock_ssh()
+    mock_ssh.exec_command.return_value = (MagicMock(), _make_stdout("", 0), _make_stderr())
+    sftp = mock_ssh.open_sftp.return_value
+
+    with patch("ac_updater.ssh_client.paramiko.SSHClient", return_value=mock_ssh):
+        client = SshClient("h", "acserver")
+        client.connect()
+    client.upload_ai_spline("/home/acserver/ac-drift", "ks_nordschleife", Path("/tmp/fast_ai.bin"))
+
+    remote: str = sftp.put.call_args[0][1]
+    assert remote.endswith("/fast_ai.bin")
+    assert "ks_nordschleife/ai" in remote
