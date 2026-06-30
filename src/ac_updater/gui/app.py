@@ -2121,15 +2121,18 @@ class _App(tk.Tk):
     def _on_add_ai_spline(self) -> None:
         if self._ssh_client is None or not self._current_server_name:
             return
-        tracks = list(self._server_tracks_panel._vars.keys())
-        if not tracks:
-            messagebox.showinfo("No tracks", "No tracks found on the server.", parent=self)
-            return
-
-        dlg = _AiSplineTrackDialog(self, tracks)
-        if dlg.result is None:
-            return
-        track = dlg.result
+        selected = self._server_tracks_panel.get_selected()
+        if selected:
+            track = selected[0]
+        else:
+            tracks = list(self._server_tracks_panel._vars.keys())
+            if not tracks:
+                messagebox.showinfo("No tracks", "No tracks found on the server.", parent=self)
+                return
+            dlg = _AiSplineTrackDialog(self, tracks)
+            if dlg.result is None:
+                return
+            track = dlg.result
 
         spline_str = filedialog.askopenfilename(
             title="Select AI spline file",
