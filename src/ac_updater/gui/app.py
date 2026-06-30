@@ -1138,7 +1138,10 @@ class _App(tk.Tk):
             else:
                 lines.append(f"{category.title()} (0): none selected")
         text = "\n".join(lines) if lines else "No content loaded."
-        for widget in (self._selection_text, self._nc_selection_text):
+        widgets = [self._selection_text]
+        if hasattr(self, "_nc_selection_text"):
+            widgets.append(self._nc_selection_text)
+        for widget in widgets:
             widget.configure(state="normal")
             widget.delete("1.0", "end")
             widget.insert("end", text)
