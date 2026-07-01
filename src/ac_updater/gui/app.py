@@ -400,6 +400,7 @@ class _App(tk.Tk):
         self._nc_file_panel: FileBrowserPanel | None = None
         self._nc_log_handler: TkLogHandler | None = None
         self._tab_status: dict[int, tuple[str, str]] = {}
+        self._server_combos: list[ttk.Combobox] = []
 
         # SSH / NC StringVars initialised here so header and all tabs can reference them
         ssh_host, ssh_user, ssh_key = load_ssh_config()
@@ -460,25 +461,25 @@ class _App(tk.Tk):
         self._nb = ttk.Notebook(self)
         self._nb.pack(fill="both", expand=True, padx=8, pady=(6, 0))
 
-        tab1 = ttk.Frame(self._nb, padding=6)
+        tab1 = ttk.Frame(self._nb, padding=12)
         tab2 = ttk.Frame(self._nb, padding=12)
-        tab3 = ttk.Frame(self._nb, padding=12)
+        tab3 = ttk.Frame(self._nb, padding=6)
         tab4 = ttk.Frame(self._nb, padding=12)
         tab5 = ttk.Frame(self._nb, padding=12)
 
-        self._nb.add(tab1, text="  Content Browser  ")
-        self._nb.add(tab2, text="  Server Manager  ")
-        self._nb.add(tab3, text="  Nextcloud  ")
-        self._nb.add(tab4, text="  Connections  ")
-        self._nb.add(tab5, text="  Archive  ")
+        self._nb.add(tab1, text="  Connections  ")
+        self._nb.add(tab2, text="  Archive  ")
+        self._nb.add(tab3, text="  Content Browser  ")
+        self._nb.add(tab4, text="  Nextcloud  ")
+        self._nb.add(tab5, text="  Server Manager  ")
 
-        self._build_content_tab(tab1, content)
-        self._build_server_tab(tab2)
-        self._build_nextcloud_tab(tab3)
-        self._build_connections_tab(tab4)
-        self._build_archive_tab(tab5)
+        self._build_connections_tab(tab1)
+        self._build_archive_tab(tab2)
+        self._build_content_tab(tab3, content)
+        self._build_nextcloud_tab(tab4)
+        self._build_server_tab(tab5)
 
-        self._nb.select(1)  # type: ignore[no-untyped-call]  # Server Manager default tab
+        self._nb.select(0)  # type: ignore[no-untyped-call]  # Connections default tab
         self._nb.bind("<<NotebookTabChanged>>", self._on_tab_changed)
 
     def _build_content_tab(self, parent: ttk.Frame, content: dict[str, list[str]]) -> None:
@@ -501,7 +502,27 @@ class _App(tk.Tk):
             panel.pack(side="left", fill="both", expand=True, padx=(0, 4))
             self._panels[category] = panel
 
+    def _build_server_selector_row(self, parent: tk.Misc, pady: tuple[int, int] = (0, 6)) -> ttk.Combobox:
+        """Create a compact 'Target server' row with a shared combo.
+
+        All combos share _ssh_server_var so the selected value propagates
+        automatically.  Values and enabled state are synced via _server_combos
+        in the connect/disconnect handlers.
+        """
+        row = ttk.Frame(parent)
+        row.pack(fill="x", pady=pady)
+        ttk.Label(row, text="Target server:").pack(side="left")
+        combo = ttk.Combobox(row, textvariable=self._ssh_server_var, state="readonly", width=32)
+        combo.pack(side="left", padx=(6, 0))
+        combo.bind("<<ComboboxSelected>>", self._on_server_selected)
+        combo.state(["disabled"])
+        self._server_combos.append(combo)
+        return combo
+
     def _build_server_tab(self, parent: ttk.Frame) -> None:
+        # ── Server selector ──────────────────────────────────────────────────
+        self._build_server_selector_row(parent)
+
         # ── Share copy section (fixed, above the paned split) ──────────────
         share_row = ttk.Frame(parent)
         share_row.pack(fill="x", pady=(0, 8))
@@ -566,10 +587,6 @@ class _App(tk.Tk):
         # ── Deploy row ───────────────────────────────────────────────────────
         deploy_row = ttk.Frame(parent)
         deploy_row.pack(fill="x", pady=(0, 4))
-        ttk.Label(deploy_row, text="Server:").pack(side="left")
-        ttk.Label(deploy_row, textvariable=self._ssh_server_var, foreground=_GRAY).pack(
-            side="left", padx=(4, 12)
-        )
         self._ssh_deploy_btn = ttk.Button(
             deploy_row, text="Deploy to Server", command=self._on_ssh_deploy
         )
@@ -615,7 +632,7 @@ class _App(tk.Tk):
         )
         self._ssh_placeholder.grid(row=0, column=0)
         self._ssh_placeholder.bind(
-            "<Button-1>", lambda _e: self._nb.select(3)  # type: ignore[no-untyped-call]
+            "<Button-1>", lambda _e: self._nb.select(0)  # type: ignore[no-untyped-call]
         )
 
         # Right: content on the selected server
@@ -725,13 +742,8 @@ class _App(tk.Tk):
         )
         self._nc_selection_text.pack(fill="x")
 
-        # ── Server context row ────────────────────────────────────────────
-        server_row = ttk.Frame(parent)
-        server_row.pack(fill="x", pady=(0, 8))
-        ttk.Label(server_row, text="Server:", font=("", 9, "bold")).pack(side="left")
-        ttk.Label(server_row, textvariable=self._ssh_server_var, foreground=_GRAY).pack(
-            side="left", padx=(6, 0)
-        )
+        # ── Server selector ───────────────────────────────────────────────
+        self._build_server_selector_row(parent, pady=(0, 8))
 
         # ── Paned: left = packs/progress/log · right = file browser ──────
         paned = ttk.PanedWindow(parent, orient="horizontal")
@@ -880,15 +892,7 @@ class _App(tk.Tk):
 
         ttk.Separator(ssh_lf, orient="horizontal").pack(fill="x", pady=(0, 6))
 
-        server_row = ttk.Frame(ssh_lf)
-        server_row.pack(fill="x")
-        ttk.Label(server_row, text="Target server:").pack(side="left")
-        self._ssh_server_combo = ttk.Combobox(
-            server_row, textvariable=self._ssh_server_var, state="readonly", width=32
-        )
-        self._ssh_server_combo.pack(side="left", padx=(6, 0))
-        self._ssh_server_combo.bind("<<ComboboxSelected>>", self._on_server_selected)
-        self._ssh_server_combo.state(["disabled"])
+        self._ssh_server_combo = self._build_server_selector_row(ssh_lf, pady=(0, 0))
 
         # ── Nextcloud Connection ──────────────────────────────────────────
         nc_lf = ttk.LabelFrame(
@@ -1792,8 +1796,9 @@ class _App(tk.Tk):
             self._ssh_server_map[label] = srv
             display_list.append(label)
         self._share_refresh_btn.state(["!disabled"])
-        self._ssh_server_combo["values"] = display_list
-        self._ssh_server_combo.state(["!disabled"])
+        for _c in self._server_combos:
+            _c["values"] = display_list
+            _c.state(["!disabled"])
         if display_list:
             self._ssh_server_combo.set(display_list[0])
             self._ssh_deploy_btn.state(["!disabled"])
@@ -1829,9 +1834,10 @@ class _App(tk.Tk):
         self._ssh_server_map.clear()
         self._current_server_name = ""
         self._share_refresh_btn.state(["disabled"])
-        self._ssh_server_combo["values"] = []
+        for _c in self._server_combos:
+            _c["values"] = []
+            _c.state(["disabled"])
         self._ssh_server_combo.set("")
-        self._ssh_server_combo.state(["disabled"])
         self._ssh_placeholder.configure(text="Connect to browse content on the share")
         self._ssh_content_frame.grid_rowconfigure(0, weight=1)
         for _i in range(1, 4):
