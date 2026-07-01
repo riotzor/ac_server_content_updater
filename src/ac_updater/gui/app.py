@@ -941,7 +941,7 @@ class _App(tk.Tk):
         self._status_var.set(text)
         self._status_label.configure(foreground=color)
         try:
-            self._tab_status[self._nb.index("current")] = (text, color)
+            self._tab_status[self._nb.index("current")] = (text, color)  # type: ignore[no-untyped-call]
         except Exception:
             pass
 
@@ -1120,7 +1120,7 @@ class _App(tk.Tk):
     def _on_tab_changed(self, event: object = None) -> None:
         self._refresh_selection_display()
         try:
-            idx = self._nb.index("current")
+            idx = self._nb.index("current")  # type: ignore[no-untyped-call]
             text, color = self._tab_status.get(idx, ("", _GRAY))
             self._status_var.set(text)
             self._status_label.configure(foreground=color)
