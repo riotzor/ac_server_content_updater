@@ -1288,10 +1288,22 @@ def test_ensure_capacity_reads_from_correct_path() -> None:
 # ---------------------------------------------------------------------------
 
 
+def _make_sftp_attr(name: str, *, is_dir: bool = False) -> paramiko.SFTPAttributes:
+    attr = paramiko.SFTPAttributes()
+    attr.filename = name
+    attr.st_mode = (stat.S_IFDIR | 0o755) if is_dir else (stat.S_IFREG | 0o644)
+    return attr
+
+
 def test_list_track_layouts_returns_layouts_from_models_ini_files() -> None:
     mock_ssh = _make_mock_ssh()
     sftp = mock_ssh.open_sftp.return_value
-    sftp.listdir.return_value = ["models_tourist.ini", "models_endurance.ini", "data", "skins"]
+    sftp.listdir_attr.return_value = [
+        _make_sftp_attr("models_tourist.ini"),
+        _make_sftp_attr("models_endurance.ini"),
+        _make_sftp_attr("data", is_dir=True),
+        _make_sftp_attr("skins", is_dir=True),
+    ]
 
     with patch("ac_updater.ssh_client.paramiko.SSHClient", return_value=mock_ssh):
         client = SshClient("h", "u")
@@ -1304,7 +1316,12 @@ def test_list_track_layouts_returns_layouts_from_models_ini_files() -> None:
 def test_list_track_layouts_returns_empty_for_single_layout_track() -> None:
     mock_ssh = _make_mock_ssh()
     sftp = mock_ssh.open_sftp.return_value
-    sftp.listdir.return_value = ["models.ini", "data", "skins", "ui"]
+    sftp.listdir_attr.return_value = [
+        _make_sftp_attr("models.ini"),
+        _make_sftp_attr("data", is_dir=True),
+        _make_sftp_attr("skins", is_dir=True),
+        _make_sftp_attr("ui", is_dir=True),
+    ]
 
     with patch("ac_updater.ssh_client.paramiko.SSHClient", return_value=mock_ssh):
         client = SshClient("h", "u")
@@ -1317,7 +1334,7 @@ def test_list_track_layouts_returns_empty_for_single_layout_track() -> None:
 def test_list_track_layouts_returns_empty_on_oserror() -> None:
     mock_ssh = _make_mock_ssh()
     sftp = mock_ssh.open_sftp.return_value
-    sftp.listdir.side_effect = OSError("not found")
+    sftp.listdir_attr.side_effect = OSError("not found")
 
     with patch("ac_updater.ssh_client.paramiko.SSHClient", return_value=mock_ssh):
         client = SshClient("h", "u")
@@ -1329,7 +1346,10 @@ def test_list_track_layouts_excludes_models_ini_without_layout_suffix() -> None:
     mock_ssh = _make_mock_ssh()
     sftp = mock_ssh.open_sftp.return_value
     # "models_.ini" has empty suffix after stripping — should be excluded
-    sftp.listdir.return_value = ["models_.ini", "models_short.ini"]
+    sftp.listdir_attr.return_value = [
+        _make_sftp_attr("models_.ini"),
+        _make_sftp_attr("models_short.ini"),
+    ]
 
     with patch("ac_updater.ssh_client.paramiko.SSHClient", return_value=mock_ssh):
         client = SshClient("h", "u")
@@ -1342,16 +1362,59 @@ def test_list_track_layouts_excludes_models_ini_without_layout_suffix() -> None:
 def test_list_track_layouts_reads_from_correct_path() -> None:
     mock_ssh = _make_mock_ssh()
     sftp = mock_ssh.open_sftp.return_value
-    sftp.listdir.return_value = []
+    sftp.listdir_attr.return_value = []
 
     with patch("ac_updater.ssh_client.paramiko.SSHClient", return_value=mock_ssh):
         client = SshClient("h", "u")
         client.connect()
     client.list_track_layouts("/home/acserver/ac-drift", "ks_nordschleife")
 
-    sftp.listdir.assert_called_once_with(
+    sftp.listdir_attr.assert_called_once_with(
         "/home/acserver/ac-drift/content/tracks/csp/ks_nordschleife"
     )
+
+
+def test_list_track_layouts_falls_back_to_subdirectories_when_no_models_ini() -> None:
+    mock_ssh = _make_mock_ssh()
+    sftp = mock_ssh.open_sftp.return_value
+    # Track uses subdirectory layout convention — no models_<layout>.ini files
+    sftp.listdir_attr.return_value = [
+        _make_sftp_attr("main_layout", is_dir=True),
+        _make_sftp_attr("data", is_dir=True),
+        _make_sftp_attr("ai", is_dir=True),
+        _make_sftp_attr("ui", is_dir=True),
+        _make_sftp_attr("models.ini"),
+    ]
+
+    with patch("ac_updater.ssh_client.paramiko.SSHClient", return_value=mock_ssh):
+        client = SshClient("h", "u")
+        client.connect()
+    layouts = client.list_track_layouts("/home/acserver/ac-drift", "some_track")
+
+    assert layouts == ["main_layout"]
+
+
+def test_list_track_layouts_subdirectory_fallback_excludes_non_layout_dirs() -> None:
+    mock_ssh = _make_mock_ssh()
+    sftp = mock_ssh.open_sftp.return_value
+    sftp.listdir_attr.return_value = [
+        _make_sftp_attr("layout_a", is_dir=True),
+        _make_sftp_attr("layout_b", is_dir=True),
+        _make_sftp_attr("ai", is_dir=True),
+        _make_sftp_attr("data", is_dir=True),
+        _make_sftp_attr("map", is_dir=True),
+        _make_sftp_attr("ui", is_dir=True),
+        _make_sftp_attr("skins", is_dir=True),
+        _make_sftp_attr("textures", is_dir=True),
+        _make_sftp_attr("extension", is_dir=True),
+    ]
+
+    with patch("ac_updater.ssh_client.paramiko.SSHClient", return_value=mock_ssh):
+        client = SshClient("h", "u")
+        client.connect()
+    layouts = client.list_track_layouts("/home/acserver/ac-drift", "multi_track")
+
+    assert layouts == ["layout_a", "layout_b"]
 
 
 # ---------------------------------------------------------------------------

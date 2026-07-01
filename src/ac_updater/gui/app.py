@@ -399,7 +399,7 @@ class _App(tk.Tk):
         self._current_server_name: str = ""
         self._nc_file_panel: FileBrowserPanel | None = None
         self._nc_log_handler: TkLogHandler | None = None
-        self._nc_selection_var = tk.StringVar(value="nothing selected")
+        self._tab_status: dict[int, tuple[str, str]] = {}
 
         # SSH / NC StringVars initialised here so header and all tabs can reference them
         ssh_host, ssh_user, ssh_key = load_ssh_config()
@@ -518,6 +518,9 @@ class _App(tk.Tk):
             state="disabled",
             wrap="word",
             font=("Consolas", 9),
+            background="#1e1e1e",
+            foreground="#d4d4d4",
+            insertbackground="white",
             relief="flat",
         )
         self._selection_text.pack(fill="x")
@@ -706,15 +709,27 @@ class _App(tk.Tk):
         self._server_tracks_lf = tracks_lf
 
     def _build_nextcloud_tab(self, parent: ttk.Frame) -> None:
-        # ── Context summary (connection + selection state) ────────────────
-        ctx_row = ttk.Frame(parent)
-        ctx_row.pack(fill="x", pady=(0, 8))
-        ttk.Label(ctx_row, text="Content Browser:", font=("", 9, "bold")).pack(side="left")
-        ttk.Label(ctx_row, textvariable=self._nc_selection_var, foreground=_GRAY).pack(
-            side="left", padx=(6, 20)
+        # ── Content Browser selection (dark text box, mirrors Server Manager) ─
+        nc_sel_lf = ttk.LabelFrame(parent, text="Content Browser selection", padding=4)
+        nc_sel_lf.pack(fill="x", pady=(0, 4))
+        self._nc_selection_text = tk.Text(
+            nc_sel_lf,
+            height=3,
+            state="disabled",
+            wrap="word",
+            font=("Consolas", 9),
+            background="#1e1e1e",
+            foreground="#d4d4d4",
+            insertbackground="white",
+            relief="flat",
         )
-        ttk.Label(ctx_row, text="Server:", font=("", 9, "bold")).pack(side="left")
-        ttk.Label(ctx_row, textvariable=self._ssh_server_var, foreground=_GRAY).pack(
+        self._nc_selection_text.pack(fill="x")
+
+        # ── Server context row ────────────────────────────────────────────
+        server_row = ttk.Frame(parent)
+        server_row.pack(fill="x", pady=(0, 8))
+        ttk.Label(server_row, text="Server:", font=("", 9, "bold")).pack(side="left")
+        ttk.Label(server_row, textvariable=self._ssh_server_var, foreground=_GRAY).pack(
             side="left", padx=(6, 0)
         )
 
@@ -910,13 +925,13 @@ class _App(tk.Tk):
         footer = ttk.Frame(self, padding=(10, 5))
         footer.pack(fill="x", side="bottom")
 
+        self._progress = ttk.Progressbar(footer, mode="indeterminate", length=160)
+
         self._status_var = tk.StringVar()
         self._status_label = ttk.Label(
             footer, textvariable=self._status_var, foreground=_GRAY
         )
-        self._status_label.pack(side="left")
-
-        self._progress = ttk.Progressbar(footer, mode="indeterminate", length=160)
+        self._status_label.pack(side="right")
 
     # ------------------------------------------------------------------
     # Status / progress helpers
@@ -925,6 +940,10 @@ class _App(tk.Tk):
     def _set_status(self, text: str, color: str = _GRAY) -> None:
         self._status_var.set(text)
         self._status_label.configure(foreground=color)
+        try:
+            self._tab_status[self._nb.index("current")] = (text, color)  # type: ignore[no-untyped-call]
+        except Exception:
+            pass
 
     def _start_progress(self, message: str) -> None:
         """Indeterminate spinner — use for operations with unknown duration."""
@@ -1100,6 +1119,13 @@ class _App(tk.Tk):
 
     def _on_tab_changed(self, event: object = None) -> None:
         self._refresh_selection_display()
+        try:
+            idx = self._nb.index("current")  # type: ignore[no-untyped-call]
+            text, color = self._tab_status.get(idx, ("", _GRAY))
+            self._status_var.set(text)
+            self._status_label.configure(foreground=color)
+        except Exception:
+            pass
 
     def _refresh_selection_display(self) -> None:
         lines: list[str] = []
@@ -1112,11 +1138,14 @@ class _App(tk.Tk):
             else:
                 lines.append(f"{category.title()} (0): none selected")
         text = "\n".join(lines) if lines else "No content loaded."
-        self._selection_text.configure(state="normal")
-        self._selection_text.delete("1.0", "end")
-        self._selection_text.insert("end", text)
-        self._selection_text.configure(state="disabled")
-        self._nc_selection_var.set(", ".join(counts) if counts else "nothing selected")
+        widgets = [self._selection_text]
+        if hasattr(self, "_nc_selection_text"):
+            widgets.append(self._nc_selection_text)
+        for widget in widgets:
+            widget.configure(state="normal")
+            widget.delete("1.0", "end")
+            widget.insert("end", text)
+            widget.configure(state="disabled")
 
     def _on_change_dir(self) -> None:
         chosen = filedialog.askdirectory(
