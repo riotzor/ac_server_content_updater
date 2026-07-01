@@ -523,13 +523,6 @@ class _App(tk.Tk):
         # ── Server selector ──────────────────────────────────────────────────
         self._build_server_selector_row(parent)
 
-        # ── Share copy section (fixed, above the paned split) ──────────────
-        share_row = ttk.Frame(parent)
-        share_row.pack(fill="x", pady=(0, 8))
-        ttk.Label(share_row, text="Network Share:", font=("", 9, "bold")).pack(side="left")
-        self._share_path_label = ttk.Label(share_row, text=str(self._share_path))
-        self._share_path_label.pack(side="left", padx=(6, 4))
-        ttk.Button(share_row, text="Change...", command=self._on_change_share).pack(side="left")
 
         sel_lf = ttk.LabelFrame(parent, text="Content Browser selection", padding=4)
         sel_lf.pack(fill="x", pady=(0, 6))
@@ -608,6 +601,10 @@ class _App(tk.Tk):
 
         share_header = ttk.Frame(share_col)
         share_header.pack(fill="x", pady=(0, 4))
+        ttk.Label(share_header, text="Network Share:", font=("", 9, "bold")).pack(side="left")
+        self._share_path_label = ttk.Label(share_header, text=str(self._share_path))
+        self._share_path_label.pack(side="left", padx=(6, 4))
+        ttk.Button(share_header, text="Change...", command=self._on_change_share).pack(side="left")
         self._share_refresh_btn = ttk.Button(
             share_header, text="Refresh", command=self._refresh_share_content, width=8
         )
@@ -726,9 +723,12 @@ class _App(tk.Tk):
         self._server_tracks_lf = tracks_lf
 
     def _build_nextcloud_tab(self, parent: ttk.Frame) -> None:
+        # ── Server selector ───────────────────────────────────────────────
+        self._build_server_selector_row(parent, pady=(0, 4))
+
         # ── Content Browser selection (dark text box, mirrors Server Manager) ─
         nc_sel_lf = ttk.LabelFrame(parent, text="Content Browser selection", padding=4)
-        nc_sel_lf.pack(fill="x", pady=(0, 4))
+        nc_sel_lf.pack(fill="x", pady=(0, 8))
         self._nc_selection_text = tk.Text(
             nc_sel_lf,
             height=3,
@@ -741,9 +741,6 @@ class _App(tk.Tk):
             relief="flat",
         )
         self._nc_selection_text.pack(fill="x")
-
-        # ── Server selector ───────────────────────────────────────────────
-        self._build_server_selector_row(parent, pady=(0, 8))
 
         # ── Paned: left = packs/progress/log · right = file browser ──────
         paned = ttk.PanedWindow(parent, orient="horizontal")
