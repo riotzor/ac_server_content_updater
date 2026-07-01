@@ -602,7 +602,7 @@ class _App(tk.Tk):
         share_header = ttk.Frame(share_col)
         share_header.pack(fill="x", pady=(0, 4))
         ttk.Label(share_header, text="Network Share:", font=("", 9, "bold")).pack(side="left")
-        self._share_path_label = ttk.Label(share_header, text=str(self._share_path))
+        self._share_path_label = ttk.Label(share_header, text="Disconnected", foreground=_GRAY)
         self._share_path_label.pack(side="left", padx=(6, 4))
         ttk.Button(share_header, text="Change...", command=self._on_change_share).pack(side="left")
         self._share_refresh_btn = ttk.Button(
@@ -615,7 +615,6 @@ class _App(tk.Tk):
         # leaving share_header (and the Refresh button) untouched on reconnect.
         share_content = ttk.Frame(share_col)
         share_content.pack(fill="both", expand=True)
-        share_content.grid_rowconfigure(0, weight=1)
         share_content.grid_columnconfigure(0, weight=1)
         self._ssh_content_frame = share_content
 
@@ -627,7 +626,7 @@ class _App(tk.Tk):
             cursor="hand2",
             justify="center",
         )
-        self._ssh_placeholder.grid(row=0, column=0)
+        self._ssh_placeholder.place(relx=0.5, rely=0.5, anchor="center")
         self._ssh_placeholder.bind(
             "<Button-1>", lambda _e: self._nb.select(0)  # type: ignore[no-untyped-call]
         )
@@ -1685,7 +1684,7 @@ class _App(tk.Tk):
 
         has_content = any(content.values())
         if has_content:
-            self._ssh_placeholder.grid_remove()
+            self._ssh_placeholder.place_forget()
             row = 0
             for category, items in content.items():
                 if items:
@@ -1711,11 +1710,10 @@ class _App(tk.Tk):
             for i in range(row, row + 3):
                 self._ssh_content_frame.grid_rowconfigure(i, weight=0)
         else:
-            self._ssh_content_frame.grid_rowconfigure(0, weight=1)
-            for i in range(1, 4):
+            for i in range(0, 4):
                 self._ssh_content_frame.grid_rowconfigure(i, weight=0)
             self._ssh_placeholder.configure(text="No content found on the share")
-            self._ssh_placeholder.grid(row=0, column=0)
+            self._ssh_placeholder.place(relx=0.5, rely=0.5, anchor="center")
 
     def _on_delete_from_share(self, category: str) -> None:
         if self._ssh_client is None:
@@ -1804,6 +1802,7 @@ class _App(tk.Tk):
             self._ssh_server_combo.set("")
             self._ssh_deploy_btn.state(["disabled"])
 
+        self._share_path_label.configure(text=str(self._share_path), foreground="")
         self._set_status(f"SSH connected to {host}", _GREEN)
 
     def _on_ssh_connect_failed(self, err: str) -> None:
@@ -1835,11 +1834,11 @@ class _App(tk.Tk):
             _c["values"] = []
             _c.state(["disabled"])
         self._ssh_server_combo.set("")
+        self._share_path_label.configure(text="Disconnected", foreground=_GRAY)
         self._ssh_placeholder.configure(text="Connect to browse content on the share")
-        self._ssh_content_frame.grid_rowconfigure(0, weight=1)
-        for _i in range(1, 4):
+        for _i in range(0, 4):
             self._ssh_content_frame.grid_rowconfigure(_i, weight=0)
-        self._ssh_placeholder.grid(row=0, column=0)
+        self._ssh_placeholder.place(relx=0.5, rely=0.5, anchor="center")
         self._clear_server_mgmt_panel()
         self._set_status("SSH disconnected", _GRAY)
 
