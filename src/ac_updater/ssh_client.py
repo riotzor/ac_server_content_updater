@@ -434,22 +434,38 @@ class SshClient:
     def list_track_layouts(self, server_dir: str, track_name: str) -> list[str]:
         """Return sorted layout names for a track on the server.
 
-        Layout names are derived from ``models_<layout>.ini`` files in the track
-        directory — the same convention used by detect_track_layouts locally.
+        Primary detection: ``models_<layout>.ini`` files at the track root.
+        Fallback: subdirectories whose names are not well-known non-layout dirs
+        (ai, data, map, ui, skins, textures, extension).  Some tracks store each
+        layout in its own subdirectory without a corresponding models_<layout>.ini.
         Returns an empty list for single-layout tracks or on error.
         """
         assert self._sftp is not None, "Not connected"
         track_path = f"{server_dir}/content/tracks/csp/{track_name}"
+        _NON_LAYOUT_DIRS = frozenset(
+            {"ai", "data", "map", "ui", "skin", "skins", "texture", "textures", "extension"}
+        )
         try:
-            names = self._sftp.listdir(track_path)
+            attrs = self._sftp.listdir_attr(track_path)
         except OSError:
             return []
         layouts: list[str] = []
-        for name in names:
+        for attr in attrs:
+            name = attr.filename
             if name.startswith("models_") and name.endswith(".ini"):
                 layout = name[len("models_"):-len(".ini")]
                 if layout:
                     layouts.append(layout)
+        if not layouts:
+            for attr in attrs:
+                name = attr.filename
+                if (
+                    attr.st_mode is not None
+                    and stat_module.S_ISDIR(attr.st_mode)
+                    and name not in _NON_LAYOUT_DIRS
+                    and not name.startswith(".")
+                ):
+                    layouts.append(name)
         return sorted(layouts)
 
     def delete_content(
