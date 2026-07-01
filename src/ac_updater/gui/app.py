@@ -19,6 +19,7 @@ from ac_updater.ac_finder import find_ac_install
 from ac_updater.archiver import create_archive
 from ac_updater.content_copier import CopyResult, copy_to_share, detect_track_layouts
 from ac_updater.content_scanner import scan_content
+from ac_updater.exceptions import OperationCancelled
 from ac_updater.gui.nextcloud_panel import (
     FileBrowserPanel,
     TkLogHandler,
@@ -401,6 +402,7 @@ class _App(tk.Tk):
         self._nc_log_handler: TkLogHandler | None = None
         self._tab_status: dict[int, tuple[str, str]] = {}
         self._server_combos: list[ttk.Combobox] = []
+        self._nc_cancel_event: threading.Event | None = None
 
         # SSH / NC StringVars initialised here so header and all tabs can reference them
         ssh_host, ssh_user, ssh_key = load_ssh_config()
@@ -787,10 +789,17 @@ class _App(tk.Tk):
         prog_lf.pack(fill="x", pady=(0, 8))
         self._nc_progress = ttk.Progressbar(prog_lf, mode="determinate", maximum=100)
         self._nc_progress.pack(fill="x")
+        prog_bottom = ttk.Frame(prog_lf)
+        prog_bottom.pack(fill="x", pady=(2, 0))
         self._nc_progress_var = tk.StringVar()
         ttk.Label(
-            prog_lf, textvariable=self._nc_progress_var, foreground=_GRAY
-        ).pack(anchor="w", pady=(2, 0))
+            prog_bottom, textvariable=self._nc_progress_var, foreground=_GRAY
+        ).pack(side="left")
+        self._nc_cancel_btn = ttk.Button(
+            prog_bottom, text="Cancel", command=self._on_nc_cancel, width=8
+        )
+        self._nc_cancel_btn.pack(side="right")
+        self._nc_cancel_btn.state(["disabled"])
 
         # ── Left: Archive log ────────────────────────────────────────────
         log_lf = ttk.LabelFrame(left, text="Logs", padding=4)
@@ -998,6 +1007,11 @@ class _App(tk.Tk):
     def _nc_stop_progress(self) -> None:
         self._nc_progress.configure(value=0)
         self._nc_progress_var.set("")
+
+    def _on_nc_cancel(self) -> None:
+        if self._nc_cancel_event is not None:
+            self._nc_cancel_event.set()
+        self._nc_cancel_btn.state(["disabled"])
 
     def _nc_log_clear(self) -> None:
         self._nc_log_text.configure(state="normal")
@@ -1372,12 +1386,16 @@ class _App(tk.Tk):
         os.unlink(_tmp)
         tmp_path = Path(_tmp)
 
+        cancel_event = threading.Event()
+        self._nc_cancel_event = cancel_event
+
         log.info(
             "%s initiated: tmp=%s  items=%d  archive_name=%s",
             label, tmp_path, total_items, archive_name,
         )
         self._nc_start_progress(f"Creating archive… 0 / {total_items} items", total_items)
         self._disable_buttons()
+        self._nc_cancel_btn.state(["!disabled"])
         self._nc_attach_log_handler()
 
         def on_progress(done: int, total: int) -> None:
@@ -1386,8 +1404,28 @@ class _App(tk.Tk):
 
         def _worker() -> None:
             try:
-                create_archive(install_dir, selection, tmp_path, on_progress=on_progress)
-                self.after(0, lambda: self._on_nc_archive_ready(nc_client, tmp_path, archive_name))
+                create_archive(
+                    install_dir, selection, tmp_path,
+                    on_progress=on_progress,
+                    cancel_event=cancel_event,
+                )
+                self.after(
+                    0,
+                    lambda: self._on_nc_archive_ready(
+                        nc_client, tmp_path, archive_name, cancel_event
+                    ),
+                )
+            except OperationCancelled:
+                log.info("%s — archive cancelled by user", label)
+                try:
+                    tmp_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                self.after(0, self._nc_stop_progress)
+                self.after(0, self._nc_detach_log_handler)
+                self.after(0, lambda: self._set_status("Archive cancelled", _GRAY))
+                self.after(0, self._enable_buttons)
+                self.after(0, lambda: self._nc_cancel_btn.state(["disabled"]))
             except FileNotFoundError as exc:
                 err = str(exc)
                 log.error("%s — archive failed (7-Zip not found): %s", label, exc)
@@ -1398,6 +1436,7 @@ class _App(tk.Tk):
                     0, lambda: self._set_status("Archive failed — 7-Zip not found", _RED)
                 )
                 self.after(0, self._enable_buttons)
+                self.after(0, lambda: self._nc_cancel_btn.state(["disabled"]))
             except subprocess.CalledProcessError as exc:
                 msg = f"7-Zip exited with code {exc.returncode}"
                 log.error("%s — archive failed: %s", label, msg)
@@ -1406,11 +1445,16 @@ class _App(tk.Tk):
                 self.after(0, lambda: messagebox.showerror("Archive failed", msg))
                 self.after(0, lambda: self._set_status("Archive failed", _RED))
                 self.after(0, self._enable_buttons)
+                self.after(0, lambda: self._nc_cancel_btn.state(["disabled"]))
 
         threading.Thread(target=_worker, daemon=True).start()
 
     def _on_nc_archive_ready(
-        self, nc_client: NextcloudClient, tmp_path: Path, archive_name: str
+        self,
+        nc_client: NextcloudClient,
+        tmp_path: Path,
+        archive_name: str,
+        cancel_event: threading.Event | None = None,
     ) -> None:
         self._nc_stop_progress()
         # Keep log handler attached so upload logs appear in the Logs panel.
@@ -1432,6 +1476,8 @@ class _App(tk.Tk):
         def _cleanup(success: bool) -> None:
             self._nc_detach_log_handler()
             self._nc_stop_progress()
+            self._nc_cancel_btn.state(["disabled"])
+            self._nc_cancel_event = None
             if success:
                 log.info("Upload completed successfully")
                 self._set_status("Upload complete", _GREEN)
@@ -1450,6 +1496,7 @@ class _App(tk.Tk):
                 tmp_path, archive_name,
                 on_done=_cleanup,
                 on_progress=on_upload_progress,
+                cancel_event=cancel_event,
             )
         else:
             # Fallback: open standalone dialog if file browser not yet visible
