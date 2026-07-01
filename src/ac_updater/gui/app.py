@@ -502,7 +502,9 @@ class _App(tk.Tk):
             panel.pack(side="left", fill="both", expand=True, padx=(0, 4))
             self._panels[category] = panel
 
-    def _build_server_selector_row(self, parent: tk.Misc, pady: tuple[int, int] = (0, 6)) -> ttk.Combobox:
+    def _build_server_selector_row(
+        self, parent: tk.Misc, pady: tuple[int, int] = (0, 6)
+    ) -> ttk.Combobox:
         """Create a compact 'Target server' row with a shared combo.
 
         All combos share _ssh_server_var so the selected value propagates
