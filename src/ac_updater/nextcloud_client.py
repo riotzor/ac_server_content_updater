@@ -8,6 +8,7 @@ exception-based error handling.
 from __future__ import annotations
 
 import logging
+import threading
 import uuid
 import xml.etree.ElementTree as ET
 from collections.abc import Callable
@@ -17,6 +18,8 @@ from urllib.parse import unquote, urlparse
 
 import requests
 from requests.auth import HTTPBasicAuth
+
+from ac_updater.exceptions import OperationCancelled
 
 log = logging.getLogger(__name__)
 
@@ -118,6 +121,7 @@ class NextcloudClient:
         local_path: Path,
         remote_path: str,
         on_progress: _ProgressCallback | None = None,
+        cancel_event: threading.Event | None = None,
     ) -> None:
         """Upload local_path to remote_path, creating parent dirs as needed.
 
@@ -125,6 +129,8 @@ class NextcloudClient:
         so that no single HTTP body exceeds proxy size limits (e.g. Cloudflare).
         on_progress(bytes_sent, total_bytes) is called after each chunk for large
         files; it is not called for single-PUT uploads (files < _CHUNK_SIZE).
+
+        Raises OperationCancelled if cancel_event is set between chunks.
         """
         file_size = local_path.stat().st_size
         log.info(
@@ -137,7 +143,7 @@ class NextcloudClient:
         if parent:
             self._ensure_dirs(parent)
         if file_size > _CHUNK_SIZE:
-            self._upload_chunked(local_path, remote_path, on_progress)
+            self._upload_chunked(local_path, remote_path, on_progress, cancel_event)
         else:
             self._upload_single(local_path, remote_path)
         log.info("Upload complete: %s", remote_path)
@@ -160,6 +166,7 @@ class NextcloudClient:
         local_path: Path,
         remote_path: str,
         on_progress: _ProgressCallback | None = None,
+        cancel_event: threading.Event | None = None,
     ) -> None:
         """Nextcloud chunked-upload protocol (dav/uploads).
 
@@ -185,6 +192,9 @@ class NextcloudClient:
                 chunk = fh.read(_CHUNK_SIZE)
                 if not chunk:
                     break
+                if cancel_event is not None and cancel_event.is_set():
+                    log.info("Chunked upload cancelled at offset %d", offset)
+                    raise OperationCancelled("Upload cancelled")
                 chunk_url = f"{upload_dir}{offset}"
                 log.debug(
                     "PUT chunk %d: offset=%d  size=%d", chunk_num, offset, len(chunk)

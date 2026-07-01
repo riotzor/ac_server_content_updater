@@ -3,8 +3,11 @@ from __future__ import annotations
 import logging
 import shutil
 import subprocess
+import threading
 from collections.abc import Callable
 from pathlib import Path
+
+from ac_updater.exceptions import OperationCancelled
 
 _ProgressCallback = Callable[[int, int], None]
 
@@ -43,6 +46,7 @@ def create_archive(
     *,
     sevenzip_exe: Path | None = None,
     on_progress: _ProgressCallback | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> None:
     """Compress selected content into a .7z archive.
 
@@ -51,6 +55,7 @@ def create_archive(
     layout (cars/<name>, tracks/<name>) for direct extraction into a server.
 
     Raises:
+        OperationCancelled: if cancel_event is set between items.
         FileNotFoundError: if 7-Zip cannot be located.
         subprocess.CalledProcessError: if 7-Zip exits with a non-zero code.
     """
@@ -79,6 +84,9 @@ def create_archive(
     )
 
     for i, item in enumerate(items):
+        if cancel_event is not None and cancel_event.is_set():
+            log.info("Archive cancelled by user at item %d/%d", i + 1, total)
+            raise OperationCancelled("Archive cancelled")
         log.debug("Archiving item %d/%d: %s", i + 1, total, item)
         cmd = [str(exe), "a", "-t7z", str(output_path), item]
         try:

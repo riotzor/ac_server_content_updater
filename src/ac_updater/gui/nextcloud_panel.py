@@ -10,12 +10,14 @@ from pathlib import Path
 from tkinter import messagebox, simpledialog, ttk
 from urllib.parse import urlparse
 
+from ac_updater.exceptions import OperationCancelled
 from ac_updater.nextcloud_client import NextcloudClient, NextcloudError, RemoteFile
 from ac_updater.nextcloud_config import load_credentials, save_credentials
 
 log = logging.getLogger(__name__)
 
 _GREEN = "#27ae60"
+_GRAY = "#6b7280"
 _RED = "#c0392b"
 _ORANGE = "#e67e00"
 
@@ -212,6 +214,7 @@ class FileBrowserPanel(ttk.Frame):
         self._archive_name = "upload.7z"
         self._on_upload_done: Callable[[bool], None] | None = None
         self._on_upload_progress: Callable[[int, int], None] | None = None
+        self._cancel_event: threading.Event | None = None
         self._build()
 
     # ------------------------------------------------------------------
@@ -230,12 +233,14 @@ class FileBrowserPanel(ttk.Frame):
         name: str,
         on_done: Callable[[bool], None] | None = None,
         on_progress: Callable[[int, int], None] | None = None,
+        cancel_event: threading.Event | None = None,
     ) -> None:
         """Show the upload area for an archive that is ready to upload."""
         self._archive_path = path
         self._archive_name = name
         self._on_upload_done = on_done
         self._on_upload_progress = on_progress
+        self._cancel_event = cancel_event
         self._upload_name_var.set(name)
         self._update_path_display()
         self._upload_btn.state(["!disabled"])
@@ -489,6 +494,7 @@ class FileBrowserPanel(ttk.Frame):
         client = self._client
         callback = self._on_upload_done
         ext_progress = self._on_upload_progress
+        cancel_event = self._cancel_event
 
         def on_progress(sent: int, total: int) -> None:
             if ext_progress is not None:
@@ -498,11 +504,18 @@ class FileBrowserPanel(ttk.Frame):
         def _do() -> None:
             success = False
             try:
-                client.upload_file(archive_path, remote, on_progress=on_progress)
+                client.upload_file(
+                    archive_path, remote,
+                    on_progress=on_progress,
+                    cancel_event=cancel_event,
+                )
                 success = True
                 log.info("Upload succeeded: %s", remote)
                 self.after(0, lambda: self._set_status(f"Uploaded ✓  →  /{remote}", _GREEN))
                 self.after(0, self._refresh)
+            except OperationCancelled:
+                log.info("Upload cancelled by user")
+                self.after(0, lambda: self._set_status("Upload cancelled", _GRAY))
             except (NextcloudError, OSError) as exc:
                 err = str(exc)
                 log.error("Upload failed: %s", exc)
