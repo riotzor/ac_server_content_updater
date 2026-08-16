@@ -13,6 +13,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
 import paramiko
+import sv_ttk
 
 from ac_updater._logging import setup_logging
 from ac_updater.ac_finder import find_ac_install
@@ -43,10 +44,25 @@ _SELECTION_FILE = Path("selections") / "selection.txt"
 _WINDOW_TITLE = "AC Server Content Updater"
 _WINDOW_SIZE = "1060x680"
 
+_ASSETS_DIR = Path(__file__).parent / "assets"
+_ICON_ICO = _ASSETS_DIR / "icon.ico"
+_ICON_PNG = _ASSETS_DIR / "icon.png"
+
 _GREEN = "#27ae60"
 _RED = "#c0392b"
 _ORANGE = "#e67e00"
 _GRAY = "gray"
+
+# Tab labels get a leading glyph rather than a bundled image — keeps the
+# notebook readable in both the light and dark sv_ttk themes without shipping
+# per-tab icon assets.
+_TAB_ICONS = {
+    "Connections": "\N{ELECTRIC PLUG}",
+    "Archive": "\N{FILE CABINET}",
+    "Content Browser": "\N{OPEN FILE FOLDER}",
+    "Nextcloud": "\N{CLOUD}",
+    "Server Manager": "\N{DESKTOP COMPUTER}",
+}
 
 
 class _ChecklistPanel(ttk.LabelFrame):
@@ -415,13 +431,27 @@ class _App(tk.Tk):
 
         log.info("App window created: install_dir=%s  share=%s", install_dir, self._share_path)
 
+        self._apply_icon()
         self._apply_styles()
         self._build_header()
         self._build_notebook(content)
         self._build_footer()
         self.after(200, self._try_nc_auto_connect)
 
+    def _apply_icon(self) -> None:
+        try:
+            self.iconbitmap(str(_ICON_ICO))  # type: ignore[no-untyped-call]
+        except tk.TclError:
+            # .ico is a Windows-only icon format; fall back to a PNG photo
+            # image on platforms (Linux/macOS) where iconbitmap can't load it.
+            try:
+                self._icon_photo = tk.PhotoImage(file=str(_ICON_PNG))
+                self.iconphoto(True, self._icon_photo)
+            except tk.TclError:
+                log.warning("Could not load app icon from %s", _ASSETS_DIR)
+
     def _apply_styles(self) -> None:
+        sv_ttk.set_theme("dark")
         s = ttk.Style()
         s.configure("Primary.TLabelframe.Label", font=("", 10, "bold"))
         s.configure("Secondary.TLabelframe.Label", font=("", 9, "bold"))
@@ -469,11 +499,11 @@ class _App(tk.Tk):
         tab4 = ttk.Frame(self._nb, padding=12)
         tab5 = ttk.Frame(self._nb, padding=12)
 
-        self._nb.add(tab1, text="  Connections  ")
-        self._nb.add(tab2, text="  Archive  ")
-        self._nb.add(tab3, text="  Content Browser  ")
-        self._nb.add(tab4, text="  Nextcloud  ")
-        self._nb.add(tab5, text="  Server Manager  ")
+        self._nb.add(tab1, text=f"  {_TAB_ICONS['Connections']} Connections  ")
+        self._nb.add(tab2, text=f"  {_TAB_ICONS['Archive']} Archive  ")
+        self._nb.add(tab3, text=f"  {_TAB_ICONS['Content Browser']} Content Browser  ")
+        self._nb.add(tab4, text=f"  {_TAB_ICONS['Nextcloud']} Nextcloud  ")
+        self._nb.add(tab5, text=f"  {_TAB_ICONS['Server Manager']} Server Manager  ")
 
         self._build_connections_tab(tab1)
         self._build_archive_tab(tab2)
